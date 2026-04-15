@@ -164,11 +164,17 @@ class TDDGenerator:
         *,
         max_iter_per_fn: int = 5,
         holistic_after: int = 3,
+        multi_sample_after: int = 2,
+        multi_sample_n: int = 4,
+        multi_sample_temperature: float = 0.35,
     ):
         self.config = config or AlchemistConfig()
         self.llm = llm or AlchemistLLM(self.config)
         self.max_iter_per_fn = max_iter_per_fn
         self.holistic_after = holistic_after
+        self.multi_sample_after = multi_sample_after
+        self.multi_sample_n = multi_sample_n
+        self.multi_sample_temperature = multi_sample_temperature
 
     # --- Main entry ---
 
@@ -275,6 +281,23 @@ class TDDGenerator:
             current = module_path.read_text(encoding="utf-8")
             current_body = self._extract_fn_body(current, alg.name)
 
+            # Multi-sample fan-out at iteration >= multi_sample_after.
+            # If sampling finds a compile+test-pass candidate, take the win.
+            if iteration >= self.multi_sample_after:
+                ms = self._multi_sample_attempt(
+                    alg, module_path, current, current_body or "unimplemented!()",
+                    previous_failure=previous_failure, crate_dir=crate_dir,
+                    test_name_prefix=test_name_prefix,
+                )
+                if ms is not None and ms.ok and ms.best and ms.best.tests_failed == 0:
+                    attempt.final_compiled = True
+                    attempt.tests_passed = True
+                    console.print(
+                        f"  [green]{alg.name}: multi-sample win on iter {iteration} "
+                        f"(candidate #{ms.best.candidate_idx})[/green]"
+                    )
+                    return attempt
+
             # Generate replacement (context-aware: includes prev failure)
             new_fn = self._prompt_for_impl(
                 alg, current_body or "unimplemented!()",
@@ -342,6 +365,7 @@ class TDDGenerator:
     def _prompt_for_impl(
         self, alg: AlgorithmSpec, current_body: str, *,
         previous_failure: str = "",
+        temperature: float = 0.15,
     ) -> str | None:
         from alchemist.standards import lookup_test_vectors
         from alchemist.references import find_references
@@ -399,7 +423,7 @@ class TDDGenerator:
             tool_schema=schema,
             cached_context=self._cached_ctx,
             max_tokens=6000,
-            temperature=0.15,
+            temperature=temperature,
         )
         if resp.structured and "content" in resp.structured:
             return (resp.structured.get("content") or "").strip() or None
@@ -409,6 +433,63 @@ class TDDGenerator:
             raw = re.sub(r"^```(?:\w+)?\s*", "", raw)
             raw = re.sub(r"```\s*$", "", raw)
         return raw or None
+
+    def _multi_sample_attempt(
+        self,
+        alg: AlgorithmSpec,
+        module_path: Path,
+        original_source: str,
+        current_body: str,
+        *,
+        previous_failure: str,
+        crate_dir: Path,
+        test_name_prefix: str,
+    ):
+        """Fan out multi_sample_n candidates, evaluate, pick best.
+
+        Returns MultiSampleResult or None (when sampling can't make progress).
+        """
+        from alchemist.implementer.multi_sample import (
+            make_cargo_evaluator,
+            run_multi_sample,
+        )
+
+        def sampler(_idx: int) -> str | None:
+            return self._prompt_for_impl(
+                alg, current_body,
+                previous_failure=previous_failure,
+                temperature=self.multi_sample_temperature,
+            )
+
+        def splicer(body: str) -> bool:
+            body, _ = scrub_rust(body)
+            if scan_text("pending.rs", body):
+                return False
+            replaced = self._replace_fn_in_source(original_source, alg.name, body)
+            if not replaced:
+                return False
+            module_path.write_text(replaced, encoding="utf-8")
+            return True
+
+        def reject_stub(body: str) -> bool:
+            return bool(scan_text("pending.rs", body))
+
+        evaluator = make_cargo_evaluator(crate_dir, test_name_prefix)
+        try:
+            return run_multi_sample(
+                sampler=sampler,
+                splicer=splicer,
+                evaluator=evaluator,
+                original_source=original_source,
+                file_path=module_path,
+                n_samples=self.multi_sample_n,
+                reject_stub=reject_stub,
+            )
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [dim]multi-sample skipped: {e}[/dim]")
+            # Always restore original source on error
+            module_path.write_text(original_source, encoding="utf-8")
+            return None
 
     def _reference_prompt_block(self, alg: AlgorithmSpec) -> str:
         """Pull any matching reference implementations from the library.
