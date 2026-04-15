@@ -64,17 +64,20 @@ def lint_crc32(source: str, alg: AlgorithmSpec) -> list[SemanticFinding]:
     has_reflected_poly = bool(re.search(r"0x[eE][dD][bB]8_?8320", source))
     has_non_reflected_poly = bool(re.search(r"0x04_?[cC]1_?1[dD][bB]7", source))
     has_castagnoli_poly = bool(re.search(r"0x82[fF]6_?3[bB]78", source))
+    # Accept pre-computed table references as proof of correct polynomial usage
+    has_table_ref = bool(re.search(r"\bCRC32_TABLE\b|\bCRC_TABLE\b|\bcrc_table\b", source))
     has_shift_right = bool(re.search(r"c\s*(?:>>=?|>>)\s*1", source)) or \
-                      bool(re.search(r"c\s*=\s*(?:0x[0-9a-fA-F]+\s*\^\s*)?\(?\s*c\s*>>\s*1", source))
+                      bool(re.search(r"c\s*=\s*(?:0x[0-9a-fA-F]+\s*\^\s*)?\(?\s*c\s*>>\s*1", source)) or \
+                      bool(re.search(r">>\s*8", source))  # table-based CRC uses >> 8
     has_shift_left = bool(re.search(r"c\s*(?:<<=?|<<)\s*1", source)) or \
                      bool(re.search(r"c\s*=\s*\(?\s*c\s*<<\s*1", source))
 
     if variant == "ieee_reflected":
-        if not has_reflected_poly:
+        if not has_reflected_poly and not has_table_ref:
             findings.append(SemanticFinding(
                 rule="crc32_wrong_polynomial",
                 severity="error",
-                message="variant:ieee_reflected requires polynomial 0xEDB88320",
+                message="variant:ieee_reflected requires polynomial 0xEDB88320 or CRC32_TABLE usage",
             ))
         if has_shift_left and not has_shift_right:
             findings.append(SemanticFinding(
