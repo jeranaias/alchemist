@@ -94,8 +94,20 @@ def _sanitize_rust_type(rust_type: str) -> str:
     add new patterns here as new failure classes surface.
     """
     t = rust_type.strip()
-    if not t or t == "()":
-        return t
+    if not t or t == "()" or t == "\"\"":
+        return "()"
+    # Bare `mut` or `&` without a type → default to &[u8]
+    if t in ("mut", "&mut", "&"):
+        return "&[u8]"
+    # Empty or whitespace-only within wrapper types
+    if t in ("&mut ", "& ", "mut "):
+        return "&mut [u8]"
+    # `mut [u8]` or `mut T` without & → add &
+    if t.startswith("mut ") and not t.startswith("mut &"):
+        t = "&" + t  # mut [u8] → &mut [u8]
+    # `[u8]` bare (not &[u8]) → &[u8]
+    if re.match(r"^\[.+\]$", t) and not t.startswith("&"):
+        t = "&" + t
 
     # [T; variable] → Vec<T> (runtime-sized arrays from C VLAs)
     for _ in range(5):
@@ -136,6 +148,17 @@ def _sanitize_rust_type(rust_type: str) -> str:
     # Result<...> with incomplete generics
     t = re.sub(r"Result<\s*,", "Result<(),", t)
 
+    # impl Fn/FnMut/FnOnce closures → simple function pointer placeholder
+    # The skeleton body is unimplemented!() so the exact closure type doesn't matter.
+    # Replace the ENTIRE impl Fn... expression (including return type) with a unit fn.
+    if re.search(r"\bimpl\s+Fn", t):
+        t = "fn()"
+
+    # Box<[T]> (unsized in Box) → Vec<T>
+    m = re.match(r"Box<\[(.+)\]>", t)
+    if m:
+        t = f"Vec<{m.group(1)}>"
+
     return t
 
 
@@ -143,7 +166,12 @@ def _sanitize_param_name(name: str, idx: int) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_]", "_", name.strip()) if name else f"arg{idx}"
     if re.match(r"^\d", safe):
         safe = f"arg_{safe}"
-    if safe in {"type", "match", "impl", "trait", "loop", "move", "ref", "mut", "self"}:
+    if safe in {"type", "match", "impl", "trait", "loop", "move", "ref", "mut", "self",
+                 "in", "fn", "let", "if", "else", "for", "while", "return", "break",
+                 "continue", "struct", "enum", "use", "mod", "pub", "where", "as",
+                 "async", "await", "dyn", "extern", "super", "crate", "const", "static",
+                 "unsafe", "abstract", "become", "box", "do", "final", "macro",
+                 "override", "priv", "typeof", "unsized", "virtual", "yield", "try"}:
         safe = f"r#{safe}"
     return safe or f"arg{idx}"
 
@@ -376,6 +404,10 @@ def _module_rs_for(
         lines.append(f"use {rust_crate}::*;")
     if dep_crate_names:
         lines.append("")
+    # Crate-internal imports — allow module files to see items defined in lib.rs
+    # (error enums, re-exported types from other modules)
+    lines.append("use crate::*;")
+    lines.append("")
     # Bring sibling module types into scope where configured
     for import_path, alias in import_alias.items():
         lines.append(f"use {import_path};")
