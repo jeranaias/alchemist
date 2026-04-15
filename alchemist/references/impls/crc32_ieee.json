@@ -1,0 +1,22 @@
+[
+  {
+    "algorithm": "crc32_ieee",
+    "variant": "reflected",
+    "title": "CRC-32 IEEE 802.3 / zlib / gzip (reflected, LSB-first)",
+    "standards": ["RFC 1952", "IEEE 802.3", "zlib CRC-32"],
+    "signature": "pub fn crc32(seed: u32, buf: &[u8]) -> u32",
+    "license": "Apache-2.0",
+    "notes": "This is THE CRC-32 used by zlib, gzip, PNG, Ethernet. Polynomial 0xEDB88320 is the bit-reversed form of 0x04C11DB7 — it MUST be used with LSB-first traversal (shift right, XOR on low bit). Mixing it with MSB-first traversal (shift left, check high bit) produces garbage. Initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF. Use seed=0 to start fresh.",
+    "rust_source": "/// Compile-time CRC-32 lookup table (reflected polynomial 0xEDB88320).\nconst CRC32_TABLE: [u32; 256] = {\n    let mut table = [0u32; 256];\n    let mut n = 0usize;\n    while n < 256 {\n        let mut c = n as u32;\n        let mut k = 0;\n        while k < 8 {\n            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };\n            k += 1;\n        }\n        table[n] = c;\n        n += 1;\n    }\n    table\n};\n\n/// Compute the RFC 1952 / IEEE 802.3 CRC-32 checksum.\n/// `seed` is the previous checksum (use 0 to start fresh).\npub fn crc32(seed: u32, buf: &[u8]) -> u32 {\n    let mut c = seed ^ 0xFFFF_FFFF;\n    for &b in buf {\n        c = CRC32_TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);\n    }\n    c ^ 0xFFFF_FFFF\n}"
+  },
+  {
+    "algorithm": "crc32_ieee",
+    "variant": "non_reflected",
+    "title": "CRC-32 non-reflected (MSB-first with 0x04C11DB7)",
+    "standards": ["IEEE 802.3"],
+    "signature": "pub fn crc32_msb(seed: u32, buf: &[u8]) -> u32",
+    "license": "Apache-2.0",
+    "notes": "Non-reflected CRC-32 variant. Polynomial 0x04C11DB7, MSB-first. NOT what zlib / gzip / PNG use — those use the reflected variant above. Include this only when the spec specifically calls for MSB-first CRC-32.",
+    "rust_source": "const CRC32_MSB_POLY: u32 = 0x04C1_1DB7;\n\npub fn crc32_msb(seed: u32, buf: &[u8]) -> u32 {\n    let mut c = seed ^ 0xFFFF_FFFF;\n    for &b in buf {\n        c ^= (b as u32) << 24;\n        for _ in 0..8 {\n            c = if c & 0x8000_0000 != 0 { (c << 1) ^ CRC32_MSB_POLY } else { c << 1 };\n        }\n    }\n    c ^ 0xFFFF_FFFF\n}"
+  }
+]

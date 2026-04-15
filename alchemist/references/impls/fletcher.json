@@ -1,0 +1,22 @@
+[
+  {
+    "algorithm": "fletcher16",
+    "variant": "rfc1146",
+    "title": "Fletcher-16 checksum",
+    "standards": ["RFC 1146"],
+    "signature": "pub fn fletcher16(buf: &[u8]) -> u16",
+    "license": "Apache-2.0",
+    "notes": "Two 8-bit sums modulo 255. sum1 = (sum1 + byte) mod 255, sum2 = (sum2 + sum1) mod 255. Output: (sum2 << 8) | sum1.",
+    "rust_source": "pub fn fletcher16(buf: &[u8]) -> u16 {\n    let mut s1: u16 = 0;\n    let mut s2: u16 = 0;\n    for &b in buf {\n        s1 = (s1 + b as u16) % 255;\n        s2 = (s2 + s1) % 255;\n    }\n    (s2 << 8) | s1\n}"
+  },
+  {
+    "algorithm": "fletcher32",
+    "variant": "rfc1146",
+    "title": "Fletcher-32 checksum",
+    "standards": ["RFC 1146"],
+    "signature": "pub fn fletcher32(buf: &[u16]) -> u32",
+    "license": "Apache-2.0",
+    "notes": "Two 16-bit sums modulo 65535 over 16-bit words. If the input is a byte slice, the caller is responsible for interpreting it as u16 words with a defined endianness.",
+    "rust_source": "pub fn fletcher32(words: &[u16]) -> u32 {\n    let mut s1: u32 = 0;\n    let mut s2: u32 = 0;\n    for &w in words {\n        s1 = (s1 + w as u32) % 65535;\n        s2 = (s2 + s1) % 65535;\n    }\n    (s2 << 16) | s1\n}"
+  }
+]

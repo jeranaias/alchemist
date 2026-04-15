@@ -1,0 +1,10 @@
+{
+  "algorithm": "crc32c",
+  "variant": "castagnoli",
+  "title": "CRC-32C (Castagnoli) — iSCSI / SCTP / btrfs / SSE4.2",
+  "standards": ["RFC 3720", "Castagnoli"],
+  "signature": "pub fn crc32c(seed: u32, buf: &[u8]) -> u32",
+  "license": "Apache-2.0",
+  "notes": "Castagnoli polynomial 0x82F63B78 (reflected form of 0x1EDC6F41). Hardware-accelerated by SSE4.2 `crc32` instruction. Same structure as zlib CRC-32 but different polynomial. Initial 0xFFFFFFFF, final XOR 0xFFFFFFFF.",
+  "rust_source": "const CRC32C_TABLE: [u32; 256] = {\n    let mut table = [0u32; 256];\n    let mut n = 0usize;\n    while n < 256 {\n        let mut c = n as u32;\n        let mut k = 0;\n        while k < 8 {\n            c = if c & 1 != 0 { 0x82F6_3B78 ^ (c >> 1) } else { c >> 1 };\n            k += 1;\n        }\n        table[n] = c;\n        n += 1;\n    }\n    table\n};\n\npub fn crc32c(seed: u32, buf: &[u8]) -> u32 {\n    let mut c = seed ^ 0xFFFF_FFFF;\n    for &b in buf {\n        c = CRC32C_TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);\n    }\n    c ^ 0xFFFF_FFFF\n}"
+}

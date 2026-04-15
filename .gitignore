@@ -15,8 +15,10 @@ target/
 # Test subjects — exclude derived artifacts but keep C source
 subjects/*/target/
 subjects/*/.alchemist/
+subjects/zlib                   # embedded repo gitlink — don't track
 subjects/zlib/                  # embedded repo — clone separately
-subjects/zlib-dll/              # vendored zlib build tree — keep out of repo
+subjects/zlib-dll               # vendored zlib build tree — keep out of repo
+subjects/zlib-dll/
 
 # Binaries
 *.dll

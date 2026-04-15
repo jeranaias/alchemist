@@ -137,6 +137,7 @@ Referenced standards: {standards}
 
 ## Standards catalog vectors (authoritative, MUST satisfy)
 {catalog_vectors}
+{reference_impls}
 
 ## Current stub to replace
 ```rust
@@ -145,7 +146,9 @@ Referenced standards: {standards}
 {previous_failure}
 
 Return the COMPLETE function definition (signature + body) that replaces
-the stub. Return ONLY the Rust code, no markdown, no explanation.
+the stub. Adapt the reference implementation (if provided) to match the
+signature required above. Return ONLY the Rust code, no markdown, no
+explanation.
 """
 
 
@@ -341,6 +344,8 @@ class TDDGenerator:
         previous_failure: str = "",
     ) -> str | None:
         from alchemist.standards import lookup_test_vectors
+        from alchemist.references import find_references
+        from alchemist.references.registry import references_for_standards
         schema = {
             "type": "object",
             "properties": {"content": {"type": "string"}},
@@ -367,6 +372,8 @@ class TDDGenerator:
             if previous_failure
             else ""
         )
+        # Reference implementation injection — adapts, never reinvents.
+        reference_block = self._reference_prompt_block(alg)
         signature = self._signature_for(alg)
         prompt = _IMPL_PROMPT.format(
             name=alg.name,
@@ -382,6 +389,7 @@ class TDDGenerator:
             ) or "(none)",
             test_vectors=tvecs,
             catalog_vectors=catalog_vec_text,
+            reference_impls=reference_block,
             current_body=current_body,
             previous_failure=prev_failure_section,
         )
@@ -401,6 +409,43 @@ class TDDGenerator:
             raw = re.sub(r"^```(?:\w+)?\s*", "", raw)
             raw = re.sub(r"```\s*$", "", raw)
         return raw or None
+
+    def _reference_prompt_block(self, alg: AlgorithmSpec) -> str:
+        """Pull any matching reference implementations from the library.
+
+        Tries two lookup paths:
+          1. Direct — by algorithm name (alias-tolerant).
+          2. By cited standards — e.g. spec says "RFC 1950" → Adler-32 ref.
+        """
+        from alchemist.references import find_references
+        from alchemist.references.registry import references_for_standards
+
+        candidates = []
+        direct = find_references(alg.name)
+        if direct.ok:
+            candidates.extend(direct.impls)
+        if alg.referenced_standards:
+            candidates.extend(references_for_standards(alg.referenced_standards))
+
+        # Dedup keeping order
+        seen: set[tuple[str, str]] = set()
+        unique: list = []
+        for impl in candidates:
+            key = (impl.algorithm, impl.variant)
+            if key not in seen:
+                seen.add(key)
+                unique.append(impl)
+
+        if not unique:
+            return ""
+        # Limit to at most 2 variants (avoid prompt explosion on multi-variant entries)
+        snippets = [impl.as_prompt_snippet() for impl in unique[:2]]
+        header = (
+            "\n## Reference implementation(s) — adapt to the signature above\n"
+            "The following Rust is a known-good implementation of this exact algorithm. "
+            "Use it as the template; change only names and signature to match the spec.\n"
+        )
+        return header + "\n\n".join(snippets)
 
     def _signature_for(self, alg: AlgorithmSpec) -> str:
         params: list[str] = [f"{p.name}: {p.rust_type}" for p in alg.inputs]
