@@ -122,8 +122,11 @@ def lint_crc32(source: str, alg: AlgorithmSpec) -> list[SemanticFinding]:
 
 def lint_adler32(source: str, alg: AlgorithmSpec) -> list[SemanticFinding]:
     findings: list[SemanticFinding] = []
-    # BASE must be 65521
-    if not re.search(r"\b65_?521\b", source):
+    # BASE must be 65521 — accept either the literal or a named constant
+    # (ADLER_BASE, BASE, ADLER32_BASE are all valid if they're defined as 65521)
+    has_literal = bool(re.search(r"\b65_?521\b", source))
+    has_named_const = bool(re.search(r"\b(?:ADLER_?BASE|BASE|ADLER32_BASE)\b", source))
+    if not has_literal and not has_named_const:
         findings.append(SemanticFinding(
             rule="adler32_wrong_base",
             severity="error",
