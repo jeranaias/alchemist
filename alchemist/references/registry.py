@@ -211,15 +211,33 @@ def references_for_standards(standards: list[str]) -> list[ReferenceImpl]:
     """Resolve references by `referenced_standards` entries.
 
     An AlgorithmSpec listing standards like `["RFC 1950", "Adler-32"]` will
-    return whatever reference impls cite those standards.
+    return whatever reference impls cite those standards. Also does fuzzy
+    matching: if the spec says "Adler-32 checksum algorithm (as used in zlib)"
+    and a reference impl cites "Adler-32", that's a match — any word from
+    the impl's standard name appearing in the spec's standard string counts.
     """
-    wanted = {s.strip().lower() for s in standards if s}
+    wanted_raw = [s.strip().lower() for s in standards if s]
     results: list[ReferenceImpl] = []
     seen: set[tuple[str, str]] = set()
     for impls in _load_all_references().values():
         for impl in impls:
-            cited = {s.lower() for s in impl.standards}
-            if cited & wanted or any(w in " ".join(cited) for w in wanted):
+            cited = [s.lower() for s in impl.standards]
+            matched = False
+            for c in cited:
+                for w in wanted_raw:
+                    # Exact match
+                    if c == w or c in w or w in c:
+                        matched = True
+                        break
+                    # Word-level: any significant word from the citation
+                    # appears in the wanted string
+                    c_words = {cw for cw in c.split() if len(cw) > 2}
+                    if c_words and all(cw in w for cw in c_words):
+                        matched = True
+                        break
+                if matched:
+                    break
+            if matched:
                 key = (impl.algorithm, impl.variant)
                 if key not in seen:
                     seen.add(key)

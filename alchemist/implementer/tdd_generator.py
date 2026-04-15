@@ -519,11 +519,19 @@ class TDDGenerator:
         from alchemist.references.registry import references_for_standards
 
         candidates = []
+        # Try direct name match (alias-tolerant)
         direct = find_references(alg.name)
         if direct.ok:
             candidates.extend(direct.impls)
+        # Try by cited standards
         if alg.referenced_standards:
             candidates.extend(references_for_standards(alg.referenced_standards))
+        # Try by category-qualified name (e.g. "adler32" from "adler32_z")
+        base_name = alg.name.rstrip("_").rsplit("_", 1)[0] if "_" in alg.name else alg.name
+        if base_name != alg.name:
+            fallback = find_references(base_name)
+            if fallback.ok:
+                candidates.extend(fallback.impls)
 
         # Dedup keeping order
         seen: set[tuple[str, str]] = set()
