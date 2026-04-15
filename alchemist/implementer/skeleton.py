@@ -272,9 +272,14 @@ def emit_trait(tr: TraitSpec) -> str:
 # Crate layout
 # ---------------------------------------------------------------------------
 
+_BUILTIN_CRATES = {"std", "core", "alloc", "proc_macro", "test"}
+
 def _cargo_toml_for_crate(crate: CrateSpec, include_workspace_tag: bool) -> str:
     dep_lines = [f'{d} = {{ path = "../{d}" }}' for d in crate.dependencies]
     for ext in getattr(crate, "external_deps", []) or []:
+        # Skip built-in crates the LLM sometimes hallucinates as external deps
+        if ext.name in _BUILTIN_CRATES:
+            continue
         if ext.features:
             feat = ", ".join(f'"{f}"' for f in ext.features)
             dep_lines.append(f'{ext.name} = {{ version = "{ext.version}", features = [{feat}] }}')
