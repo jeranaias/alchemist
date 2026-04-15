@@ -85,6 +85,21 @@ def _type_is_owning(rust_type: str) -> bool:
     return True
 
 
+def _sanitize_rust_type(rust_type: str) -> str:
+    """Fix common invalid Rust types from LLM extraction."""
+    t = rust_type.strip()
+    if not t or t == "()":
+        return t
+    # [T; variable] → Vec<T> (arrays sized by runtime variables aren't valid Rust)
+    t = re.sub(r"\[([^;]+);\s*[a-z_]\w*\s*\]", r"Vec<\1>", t)
+    # &mut [T; variable] → &mut Vec<T>
+    t = re.sub(r"&mut\s+\[([^;]+);\s*[a-z_]\w*\s*\]", r"&mut Vec<\1>", t)
+    # File → std::fs::File
+    if t == "File" or t == "&mut File" or t == "&File":
+        t = t.replace("File", "std::fs::File")
+    return t
+
+
 def _sanitize_param_name(name: str, idx: int) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_]", "_", name.strip()) if name else f"arg{idx}"
     if re.match(r"^\d", safe):
@@ -99,18 +114,19 @@ def _fn_signature(alg: AlgorithmSpec) -> str:
     params: list[str] = []
     for i, p in enumerate(alg.inputs):
         name = _sanitize_param_name(p.name, i)
+        rust_type = _sanitize_rust_type(p.rust_type)
         prefix = ""
-        if p.direction == ParamDirection.output and not p.rust_type.startswith("&mut"):
-            # Output-only parameter expressed as &mut
+        if p.direction == ParamDirection.output and not rust_type.startswith("&mut"):
             prefix = ""
-        params.append(f"{name}: {p.rust_type}")
+        params.append(f"{name}: {rust_type}")
     # Output parameters that aren't folded into return type — also append as &mut args
     for i, p in enumerate(alg.outputs):
-        if not p.rust_type.startswith("&mut"):
+        rust_type = _sanitize_rust_type(p.rust_type)
+        if not rust_type.startswith("&mut"):
             continue
         name = _sanitize_param_name(p.name, i + len(alg.inputs))
-        params.append(f"{name}: {p.rust_type}")
-    ret = alg.return_type.strip() or "()"
+        params.append(f"{name}: {rust_type}")
+    ret = _sanitize_rust_type(alg.return_type.strip() or "()")
     if ret == "()" or ret == "":
         return f"pub fn {_snake(alg.name)}({', '.join(params)})"
     return f"pub fn {_snake(alg.name)}({', '.join(params)}) -> {ret}"
