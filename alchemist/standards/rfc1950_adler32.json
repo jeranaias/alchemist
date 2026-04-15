@@ -1,0 +1,49 @@
+{
+  "algorithm": "adler32",
+  "source": "RFC 1950 (section 8), plus well-known community reference values",
+  "notes": "BASE = 65521 (largest prime < 2^16). NMAX = 5552. Output is 32-bit unsigned big-endian s2<<16 | s1.",
+  "vectors": [
+    {
+      "name": "empty",
+      "input_hex": "",
+      "expected_hex": "00000001",
+      "description": "Adler-32 of empty input is 1 (s1 initialized to 1, s2 to 0)."
+    },
+    {
+      "name": "single_byte_a",
+      "input_hex": "61",
+      "expected_hex": "00620062",
+      "description": "Adler-32('a')."
+    },
+    {
+      "name": "abc",
+      "input_hex": "616263",
+      "expected_hex": "024d0127",
+      "description": "Adler-32('abc')."
+    },
+    {
+      "name": "message_digest",
+      "input_hex": "6d65737361676520646967657374",
+      "expected_hex": "29750586",
+      "description": "Adler-32('message digest')."
+    },
+    {
+      "name": "alphabet_lower",
+      "input_hex": "6162636465666768696a6b6c6d6e6f707172737475767778797a",
+      "expected_hex": "90860b20",
+      "description": "Adler-32('abcdefghijklmnopqrstuvwxyz')."
+    },
+    {
+      "name": "Wikipedia",
+      "input_hex": "57696b697065646961",
+      "expected_hex": "11e60398",
+      "description": "Adler-32('Wikipedia') — the canonical community reference value."
+    },
+    {
+      "name": "zeros_255",
+      "input_hex": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected_hex": "00ff0001",
+      "description": "Adler-32(255 zero bytes): s1 stays 1, s2 accumulates 1 each byte → 255; packed as (s2<<16)|s1 = 0x00ff0001."
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "algorithm": "aes_family",
+  "source": "FIPS 197 / SP 800-38A. ECB single-block test vectors from NIST CAVP.",
+  "notes": "Each vector carries key_hex and plaintext_hex/ciphertext_hex. Mode is ECB single-block (no padding, no chaining).",
+  "vectors": [
+    {
+      "variant": "aes128",
+      "name": "fips197_appendix_b",
+      "mode": "ECB",
+      "key_hex": "2b7e151628aed2a6abf7158809cf4f3c",
+      "input_hex": "6bc1bee22e409f96e93d7e117393172a",
+      "expected_hex": "3ad77bb40d7a3660a89ecaf32466ef97",
+      "description": "FIPS 197 Appendix B worked example (AES-128)."
+    },
+    {
+      "variant": "aes128",
+      "name": "fips197_appendix_c1",
+      "mode": "ECB",
+      "key_hex": "000102030405060708090a0b0c0d0e0f",
+      "input_hex": "00112233445566778899aabbccddeeff",
+      "expected_hex": "69c4e0d86a7b0430d8cdb78070b4c55a",
+      "description": "FIPS 197 Appendix C.1 AES-128 (Nk=4, Nr=10)."
+    },
+    {
+      "variant": "aes128",
+      "name": "nist_sp800_38a_ecb_block1",
+      "mode": "ECB",
+      "key_hex": "2b7e151628aed2a6abf7158809cf4f3c",
+      "input_hex": "ae2d8a571e03ac9c9eb76fac45af8e51",
+      "expected_hex": "f5d3d58503b9699de785895a96fdbaaf",
+      "description": "NIST SP 800-38A F.1.1 ECB AES-128 block 2."
+    },
+    {
+      "variant": "aes128",
+      "name": "nist_sp800_38a_ecb_block2",
+      "mode": "ECB",
+      "key_hex": "2b7e151628aed2a6abf7158809cf4f3c",
+      "input_hex": "30c81c46a35ce411e5fbc1191a0a52ef",
+      "expected_hex": "43b1cd7f598ece23881b00e3ed030688",
+      "description": "NIST SP 800-38A F.1.1 ECB AES-128 block 3."
+    },
+    {
+      "variant": "aes192",
+      "name": "fips197_appendix_c2",
+      "mode": "ECB",
+      "key_hex": "000102030405060708090a0b0c0d0e0f1011121314151617",
+      "input_hex": "00112233445566778899aabbccddeeff",
+      "expected_hex": "dda97ca4864cdfe06eaf70a0ec0d7191",
+      "description": "FIPS 197 Appendix C.2 AES-192 (Nk=6, Nr=12)."
+    },
+    {
+      "variant": "aes192",
+      "name": "nist_sp800_38a_ecb_aes192",
+      "mode": "ECB",
+      "key_hex": "8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b",
+      "input_hex": "6bc1bee22e409f96e93d7e117393172a",
+      "expected_hex": "bd334f1d6e45f25ff712a214571fa5cc",
+      "description": "NIST SP 800-38A F.1.3 ECB AES-192 block 1."
+    },
+    {
+      "variant": "aes256",
+      "name": "fips197_appendix_c3",
+      "mode": "ECB",
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "input_hex": "00112233445566778899aabbccddeeff",
+      "expected_hex": "8ea2b7ca516745bfeafc49904b496089",
+      "description": "FIPS 197 Appendix C.3 AES-256 (Nk=8, Nr=14)."
+    },
+    {
+      "variant": "aes256",
+      "name": "nist_sp800_38a_ecb_aes256",
+      "mode": "ECB",
+      "key_hex": "603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4",
+      "input_hex": "6bc1bee22e409f96e93d7e117393172a",
+      "expected_hex": "f3eed1bdb5d2a03c064b5a7e3db181f8",
+      "description": "NIST SP 800-38A F.1.5 ECB AES-256 block 1."
+    }
+  ]
+}

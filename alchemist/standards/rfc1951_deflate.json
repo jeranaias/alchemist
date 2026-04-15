@@ -1,0 +1,49 @@
+{
+  "algorithm": "deflate",
+  "source": "RFC 1951 (DEFLATE), RFC 1950 (zlib wrapper). Reference outputs generated with zlib at compression level 6.",
+  "notes": "DEFLATE permits multiple valid encodings for the same input, so roundtrip is the primary correctness test. These specific byte sequences are level-6 zlib outputs — matching implementations should produce bit-identical output at the same level, but simply being decodable is the minimum bar.",
+  "vectors": [
+    {
+      "name": "empty",
+      "input_hex": "",
+      "expected_hex": "789c030000000001",
+      "mode": "zlib_level_6",
+      "description": "zlib.compress(b'', 6)"
+    },
+    {
+      "name": "a",
+      "input_hex": "61",
+      "expected_hex": "789c4b040000620062",
+      "mode": "zlib_level_6",
+      "description": "zlib.compress(b'a', 6)"
+    },
+    {
+      "name": "abc",
+      "input_hex": "616263",
+      "expected_hex": "789c4b4c4a0600024d0127",
+      "mode": "zlib_level_6",
+      "description": "zlib.compress(b'abc', 6)"
+    },
+    {
+      "name": "hello_world",
+      "input_hex": "68656c6c6f20776f726c64",
+      "expected_hex": "789ccb48cdc9c95728cf2fca4901001a0b045d",
+      "mode": "zlib_level_6",
+      "description": "zlib.compress(b'hello world', 6)"
+    },
+    {
+      "name": "100_as",
+      "input_hex": "61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "expected_hex": "789c4b4ca43d00007a4725e5",
+      "mode": "zlib_level_6",
+      "description": "zlib.compress(b'a'*100, 6)"
+    },
+    {
+      "name": "alphabet",
+      "input_hex": "6162636465666768696a6b6c6d6e6f707172737475767778797a",
+      "expected_hex": "789c4b4c4a4e494d4bcfc8cccacec9cdcb2f282c2a2e292d2bafa8ac020090860b20",
+      "mode": "zlib_level_6",
+      "description": "zlib.compress(b'abcdefghijklmnopqrstuvwxyz', 6)"
+    }
+  ]
+}

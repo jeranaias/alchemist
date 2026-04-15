@@ -1,0 +1,22 @@
+[package]
+name = "diff_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zlib-checksum = { path = "../../subjects/zlib/.alchemist/output/zlib-checksum" }
+zlib-types = { path = "../../subjects/zlib/.alchemist/output/zlib-types" }
+zlib-compression = { path = "../../subjects/zlib/.alchemist/output/zlib-compression" }
+
+[dev-dependencies]
+proptest = "1.4"
+
+[[bin]]
+name = "smoke"
+path = "src/smoke.rs"
+
+[[bin]]
+name = "roundtrip"
+path = "src/roundtrip.rs"
+
+[workspace]

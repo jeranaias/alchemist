@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Generated artifacts
+.alchemist/
+target/
+
+# Test subjects — exclude derived artifacts but keep C source
+subjects/*/target/
+subjects/*/.alchemist/
+subjects/zlib/                  # embedded repo — clone separately
+subjects/zlib-dll/              # vendored zlib build tree — keep out of repo
+
+# Binaries
+*.dll
+*.lib
+*.so
+*.dylib
+*.o
+*.exe
+*.a
+
+# Verify artifacts
+verify/*/target/
+verify/*.dll
+verify/*.lib
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
