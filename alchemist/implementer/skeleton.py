@@ -300,7 +300,11 @@ def _cargo_toml_for_crate(crate: CrateSpec, include_workspace_tag: bool) -> str:
     return content
 
 
-def _module_rs_for(module: ModuleSpec, import_alias: dict[str, str]) -> str:
+def _module_rs_for(
+    module: ModuleSpec,
+    import_alias: dict[str, str],
+    dep_crate_names: list[str] | None = None,
+) -> str:
     """Produce src/<module>.rs content: shared types + fn stubs."""
     lines: list[str] = []
     lines.append(f"//! {module.display_name or module.name}")
@@ -311,6 +315,12 @@ def _module_rs_for(module: ModuleSpec, import_alias: dict[str, str]) -> str:
     lines.append("")
     lines.append("#![allow(unused_variables, unused_imports, dead_code)]")
     lines.append("")
+    # Import everything from dependency crates (shared types like DeflateState)
+    for dep in (dep_crate_names or []):
+        rust_crate = dep.replace("-", "_")
+        lines.append(f"use {rust_crate}::*;")
+    if dep_crate_names:
+        lines.append("")
     # Bring sibling module types into scope where configured
     for import_path, alias in import_alias.items():
         lines.append(f"use {import_path};")
@@ -433,7 +443,10 @@ def generate_crate_skeleton(
     # src/<module>.rs for each module
     for m in modules:
         mod_path = crate_dir / "src" / f"{m.name}.rs"
-        mod_path.write_text(_module_rs_for(m, {}), encoding="utf-8")
+        mod_path.write_text(
+            _module_rs_for(m, {}, dep_crate_names=list(crate_spec.dependencies)),
+            encoding="utf-8",
+        )
         result.files_written.append(mod_path)
 
     return result
