@@ -327,12 +327,21 @@ def _module_rs_for(module: ModuleSpec, import_alias: dict[str, str]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _lib_rs_for(crate: CrateSpec, module_names: list[str], errors: list[ErrorType], traits: list[TraitSpec], no_std: bool) -> str:
+def _lib_rs_for(
+    crate: CrateSpec,
+    module_names: list[str],
+    errors: list[ErrorType],
+    traits: list[TraitSpec],
+    no_std: bool,
+    dep_crate_names: list[str] | None = None,
+    all_error_types: list[ErrorType] | None = None,
+) -> str:
     lines: list[str] = []
+    lines.append("#![allow(unused_imports)]")
     if no_std:
         lines.append("#![no_std]")
         lines.append("extern crate alloc;")
-        lines.append("")
+    lines.append("")
     for m in module_names:
         lines.append(f"pub mod {m};")
     if module_names:
@@ -342,6 +351,27 @@ def _lib_rs_for(crate: CrateSpec, module_names: list[str], errors: list[ErrorTyp
         lines.append(f"pub use self::{m}::*;")
     if module_names:
         lines.append("")
+    # Auto-import types from dependency crates that traits/error types
+    # in THIS crate reference. Scans trait method signatures and error
+    # variant fields for type names defined in other crates' error_types.
+    if dep_crate_names and all_error_types:
+        imported: set[str] = set()
+        # Collect type names defined in dependency crates
+        dep_type_names: dict[str, str] = {}  # type_name -> crate_name
+        for et in all_error_types:
+            if et.crate != crate.name and et.crate in set(dep_crate_names):
+                dep_type_names[et.name] = et.crate
+        # Scan this crate's traits for references to those types
+        for t in traits:
+            for m in t.methods:
+                sig = m.signature
+                for type_name, dep_crate in dep_type_names.items():
+                    if type_name in sig and type_name not in imported:
+                        rust_crate = dep_crate.replace("-", "_")
+                        lines.append(f"pub use {rust_crate}::{type_name};")
+                        imported.add(type_name)
+        if imported:
+            lines.append("")
     # Trait definitions
     for t in traits:
         lines.append(emit_trait(t))
@@ -389,7 +419,11 @@ def generate_crate_skeleton(
     # src/lib.rs
     lib_path = crate_dir / "src" / "lib.rs"
     lib_path.write_text(
-        _lib_rs_for(crate_spec, module_names, errors, traits, crate_spec.is_no_std),
+        _lib_rs_for(
+            crate_spec, module_names, errors, traits, crate_spec.is_no_std,
+            dep_crate_names=list(crate_spec.dependencies),
+            all_error_types=list(architecture.error_types),
+        ),
         encoding="utf-8",
     )
     result.files_written.append(lib_path)
