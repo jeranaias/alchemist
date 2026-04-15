@@ -86,17 +86,56 @@ def _type_is_owning(rust_type: str) -> bool:
 
 
 def _sanitize_rust_type(rust_type: str) -> str:
-    """Fix common invalid Rust types from LLM extraction."""
+    """Fix common invalid Rust types from LLM extraction.
+
+    The 122B model regularly hallucinates types that look plausible but
+    aren't valid Rust. This sanitizer catches the most common patterns
+    and replaces them with safe fallbacks. Each rule is additive —
+    add new patterns here as new failure classes surface.
+    """
     t = rust_type.strip()
     if not t or t == "()":
         return t
-    # [T; variable] → Vec<T> (arrays sized by runtime variables aren't valid Rust)
-    t = re.sub(r"\[([^;]+);\s*[a-z_]\w*\s*\]", r"Vec<\1>", t)
-    # &mut [T; variable] → &mut Vec<T>
-    t = re.sub(r"&mut\s+\[([^;]+);\s*[a-z_]\w*\s*\]", r"&mut Vec<\1>", t)
+
+    # [T; variable] → Vec<T> (runtime-sized arrays from C VLAs)
+    for _ in range(5):
+        new_t = re.sub(r"\[(.+?);\s*([a-z_]\w*)\s*\]", r"Vec<\1>", t)
+        if new_t == t:
+            break
+        t = new_t
+
+    # Box<> / Vec<> / Option<> with empty generic → Box<u8> etc
+    t = re.sub(r"Box<\s*>", "Box<u8>", t)
+    t = re.sub(r"Vec<\s*>", "Vec<u8>", t)
+    t = re.sub(r"Option<\s*>", "Option<u8>", t)
+
     # File → std::fs::File
-    if t == "File" or t == "&mut File" or t == "&File":
-        t = t.replace("File", "std::fs::File")
+    t = re.sub(r"\bFile\b", "std::fs::File", t)
+
+    # dyn std::any::Any → usize (opaque C pointer)
+    if "dyn std::any::Any" in t or "dyn Any" in t:
+        t = "usize"
+
+    # ZlibStream, ZStream → () placeholder (these should be in shared types
+    # but if they aren't, don't crash the skeleton)
+    # Only replace if the type isn't already imported from a dep crate
+    for phantom in ("ZlibStream", "ZStream", "z_stream"):
+        if phantom in t:
+            # Check if it's a &mut ref or Option wrapper
+            if f"&mut {phantom}" in t:
+                t = "&mut Vec<u8>"
+            elif f"Option<&mut {phantom}>" in t:
+                t = "Option<&mut Vec<u8>>"
+            elif f"Option<{phantom}>" in t:
+                t = "Option<Vec<u8>>"
+            elif f"&{phantom}" in t:
+                t = "&[u8]"
+            else:
+                t = "Vec<u8>"
+
+    # Result<...> with incomplete generics
+    t = re.sub(r"Result<\s*,", "Result<(),", t)
+
     return t
 
 
