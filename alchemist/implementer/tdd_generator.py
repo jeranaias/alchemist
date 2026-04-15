@@ -144,6 +144,9 @@ Referenced standards: {standards}
 {catalog_vectors}
 {reference_impls}
 
+## Shared type definitions (already in scope via `use zlib_types::*;`)
+{struct_context}
+
 ## Current stub to replace
 ```rust
 {current_body}
@@ -152,8 +155,8 @@ Referenced standards: {standards}
 
 Return the COMPLETE function definition (signature + body) that replaces
 the stub. Adapt the reference implementation (if provided) to match the
-signature required above. Return ONLY the Rust code, no markdown, no
-explanation.
+signature required above. Return ONLY the function — no const/static/use
+declarations, no markdown, no explanation.
 """
 
 
@@ -219,6 +222,7 @@ class TDDGenerator:
 
         # Phase C: per-function TDD
         console.print("[bold cyan]TDD Phase C: per-function implementation loop[/bold cyan]")
+        self._workspace_dir = output_dir  # for struct context lookup
         self._cached_ctx = self.llm.create_cached_context(
             system_text=_SYSTEM_PROMPT,
             project_context=self._build_project_context(specs, architecture),
@@ -419,6 +423,10 @@ class TDDGenerator:
         )
         # Reference implementation injection — adapts, never reinvents.
         reference_block = self._reference_prompt_block(alg)
+        # Struct context — inject field definitions for shared types that
+        # appear in the function's parameter types. Without this, the model
+        # guesses field names on 40-field structs and gets them wrong.
+        struct_context = self._struct_context_for(alg)
         signature = self._signature_for(alg)
         prompt = _IMPL_PROMPT.format(
             name=alg.name,
@@ -435,6 +443,7 @@ class TDDGenerator:
             test_vectors=tvecs,
             catalog_vectors=catalog_vec_text,
             reference_impls=reference_block,
+            struct_context=struct_context,
             current_body=current_body,
             previous_failure=prev_failure_section,
         )
@@ -512,6 +521,68 @@ class TDDGenerator:
             # Always restore original source on error
             module_path.write_text(original_source, encoding="utf-8")
             return None
+
+    def _struct_context_for(self, alg: AlgorithmSpec) -> str:
+        """Build a struct-field context block for types referenced in params.
+
+        When a function takes `&mut DeflateState`, the model needs to see
+        the exact field names and types to generate compiling code. We scan
+        the workspace's types module file for struct definitions that match
+        any type name appearing in the function's parameters.
+        """
+        # Collect type names from parameter types
+        type_names_wanted: set[str] = set()
+        for p in alg.inputs or []:
+            # Extract PascalCase identifiers from the type string
+            for m in re.finditer(r"\b([A-Z]\w+)\b", p.rust_type or ""):
+                name = m.group(1)
+                if name not in ("Vec", "Option", "Result", "Box", "String", "HashMap",
+                                "Arc", "Mutex", "Rc", "RefCell"):
+                    type_names_wanted.add(name)
+
+        if not type_names_wanted:
+            return "(no shared types referenced by this function's parameters)"
+
+        # Find the types module file in the workspace
+        if not hasattr(self, '_workspace_dir'):
+            return "(struct context unavailable — no workspace dir)"
+
+        types_files: list[Path] = []
+        for rs in Path(self._workspace_dir).rglob("types.rs"):
+            if "target" not in str(rs):
+                types_files.append(rs)
+
+        if not types_files:
+            return "(no types.rs found in workspace)"
+
+        # Extract struct/enum definitions matching wanted names
+        blocks: list[str] = []
+        for tf in types_files:
+            text = tf.read_text(encoding="utf-8", errors="replace")
+            for name in type_names_wanted:
+                # Find `pub struct Name { ... }` or `pub enum Name { ... }`
+                pattern = re.compile(
+                    rf"((?:#\[[^\]]*\]\s*\n)*"
+                    rf"pub\s+(?:struct|enum|type)\s+{re.escape(name)}\b[^{{;]*"
+                    rf"(?:\{{[^}}]*\}}|;))",
+                    re.MULTILINE | re.DOTALL,
+                )
+                m = pattern.search(text)
+                if m:
+                    defn = m.group(0).strip()
+                    # Truncate very large structs to avoid blowing up the prompt
+                    if len(defn) > 2000:
+                        defn = defn[:2000] + "\n    // ... (truncated)"
+                    blocks.append(f"```rust\n{defn}\n```")
+
+        if not blocks:
+            return "(referenced types not found in workspace types.rs)"
+
+        return (
+            "The following types are used in this function's parameters. "
+            "Use EXACTLY these field names and types:\n\n"
+            + "\n\n".join(blocks)
+        )
 
     def _reference_prompt_block(self, alg: AlgorithmSpec) -> str:
         """Pull any matching reference implementations from the library.
