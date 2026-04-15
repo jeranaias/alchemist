@@ -68,6 +68,14 @@ def scrub_rust(code: str) -> tuple[str, list[str]]:
             fixes.append(f"{pattern.pattern} → {replacement} ({n}x)")
             code = new_code
 
+    # Strip `static mut` declarations — these require unsafe blocks and violate
+    # the zero-unsafe policy. Replace with a compile-time const or remove.
+    static_mut = re.compile(r"^\s*static\s+mut\s+\w+\b[^;]*;.*$\n?", re.MULTILINE)
+    new_code, n = static_mut.subn("", code)
+    if n > 0:
+        fixes.append(f"stripped {n} static mut declaration(s)")
+        code = new_code
+
     # Strip module-level const/static re-definitions that conflict with imports.
     # The TDD generator tells the model not to redefine shared constants, but
     # it does anyway ~50% of the time. Stripping them prevents E0428.
