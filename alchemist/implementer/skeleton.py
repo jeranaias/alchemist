@@ -341,6 +341,8 @@ def _lib_rs_for(
     if no_std:
         lines.append("#![no_std]")
         lines.append("extern crate alloc;")
+        lines.append("use alloc::vec::Vec;")
+        lines.append("use alloc::string::String;")
     lines.append("")
     for m in module_names:
         lines.append(f"pub mod {m};")
