@@ -68,6 +68,38 @@ def scrub_rust(code: str) -> tuple[str, list[str]]:
             fixes.append(f"{pattern.pattern} → {replacement} ({n}x)")
             code = new_code
 
+    # Strip module-level const/static re-definitions that conflict with imports.
+    # The TDD generator tells the model not to redefine shared constants, but
+    # it does anyway ~50% of the time. Stripping them prevents E0428.
+    const_redef = re.compile(
+        r"^(?:pub\s+)?const\s+(?:CRC32_TABLE|ADLER_BASE|ADLER_NMAX)\b[^;]*;?\s*$"
+        r"(?:\n(?:[ \t].*\n)*)?",  # multi-line const (table with block)
+        re.MULTILINE,
+    )
+    # For block-style consts: `const X: T = { ... };`
+    new_code = code
+    for m in const_redef.finditer(code):
+        text = m.group(0)
+        if "{" in text:
+            # Find matching close brace
+            start = code.find("{", m.start())
+            if start >= 0:
+                depth = 1
+                i = start + 1
+                while i < len(code) and depth > 0:
+                    if code[i] == "{": depth += 1
+                    elif code[i] == "}": depth -= 1
+                    i += 1
+                # Remove from const keyword to closing };
+                end = code.find(";", i - 1)
+                if end >= 0:
+                    new_code = new_code.replace(code[m.start():end + 1], "")
+                    fixes.append(f"stripped redefined const {text[:40].strip()}")
+        else:
+            new_code = new_code.replace(text, "")
+            fixes.append(f"stripped redefined const {text[:40].strip()}")
+    code = new_code
+
     # Remove stray markdown fences that sometimes leak through JSON.
     # Strip ANY line that is just ``` or ```lang anywhere in the file.
     code = re.sub(r"^\s*```(?:\w+)?\s*$\n?", "", code, flags=re.MULTILINE)

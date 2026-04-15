@@ -549,7 +549,11 @@ class TDDGenerator:
         header = (
             "\n## Reference implementation(s) — adapt to the signature above\n"
             "The following Rust is a known-good implementation of this exact algorithm. "
-            "Use it as the template; change only names and signature to match the spec.\n"
+            "Use it as the template; change only names and signature to match the spec.\n\n"
+            "CRITICAL: Do NOT redefine any constants (CRC32_TABLE, ADLER_BASE, etc.) — "
+            "they are already imported via `use zlib_types::*;` and `use crate::*;`. "
+            "Just USE them in your function body. Return ONLY the function definition, "
+            "no const declarations, no module-level items.\n"
         )
         return header + "\n\n".join(snippets)
 
