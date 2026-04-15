@@ -35,6 +35,11 @@ from alchemist.architect.schemas import CrateArchitecture, CrateSpec
 from alchemist.config import AlchemistConfig
 from alchemist.extractor.schemas import AlgorithmSpec, ModuleSpec
 from alchemist.implementer.anti_stub import ScanReport, scan_text
+from alchemist.implementer.semantic_lints import (
+    has_errors as _semantic_has_errors,
+    lint_function as _semantic_lint,
+    summarize_for_reprompt as _semantic_summary,
+)
 from alchemist.implementer.api_completeness import (
     ApiCompletenessReport,
     check_workspace as check_api,
@@ -314,6 +319,18 @@ class TDDGenerator:
             stub_violations = scan_text("pending.rs", new_fn)
             if stub_violations:
                 console.print(f"  [yellow]{alg.name}: anti-stub rejected iteration {iteration}[/yellow]")
+                continue
+
+            # Semantic lint (family-specific invariants) — reject early if
+            # the candidate clearly violates its algorithm's math, so we
+            # don't burn a cargo check/test cycle on it.
+            semantic_findings = _semantic_lint(new_fn, alg)
+            if _semantic_has_errors(semantic_findings):
+                previous_failure = _semantic_summary(semantic_findings)
+                console.print(
+                    f"  [yellow]{alg.name}: semantic lint rejected iter {iteration} — "
+                    f"{len([f for f in semantic_findings if f.severity == 'error'])} errors[/yellow]"
+                )
                 continue
 
             # Splice into module
