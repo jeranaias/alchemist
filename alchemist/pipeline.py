@@ -369,7 +369,12 @@ def run_translate_all(
     if start_stage <= 2 <= end_stage:
         from alchemist.extractor.spec_extractor import SpecExtractor
         from alchemist.extractor.spec_validator import validate_specs as _validate_specs
+        from alchemist.extractor.variant_resolver import (
+            make_llm_tiebreaker,
+            resolve_specs,
+        )
         from alchemist.extractor.schemas import ModuleSpec
+        from alchemist.llm.client import AlchemistLLM
 
         specs_dir = checkpoint / "specs"
         specs_dir.mkdir(exist_ok=True)
@@ -380,6 +385,28 @@ def run_translate_all(
         except Exception as e:
             report.add(StageOutcome(stage="extract", ok=False, summary=f"extract failed: {e}"))
             return report
+
+        # Variant disambiguation — resolve multi-variant families (CRC, AES, SHA)
+        # to a single canonical variant BEFORE implementation sees the spec.
+        try:
+            llm = AlchemistLLM(config)
+            tiebreaker = make_llm_tiebreaker(llm)
+            resolutions = resolve_specs(specs, llm_tiebreaker=tiebreaker)
+            resolved_count = sum(1 for r in resolutions if r.resolved)
+            ambiguous_unresolved = [r for r in resolutions if not r.resolved and r.candidates]
+            if resolved_count:
+                console.print(
+                    f"[cyan]variant resolver: resolved {resolved_count} algorithms; "
+                    f"{len(ambiguous_unresolved)} unresolved[/cyan]"
+                )
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[yellow]variant resolver skipped: {e}[/yellow]")
+
+        # Re-save specs after resolution since apply_resolution mutates them
+        for s in specs:
+            (specs_dir / f"{s.name}.json").write_text(
+                s.model_dump_json(indent=2), encoding="utf-8"
+            )
 
         # Spec validator — second-pass plausibility check.
         val_report = _validate_specs(specs)
