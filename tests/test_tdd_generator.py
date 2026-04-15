@@ -94,6 +94,81 @@ def test_fn_not_found_returns_none():
     assert gen._replace_fn_in_source(source, "bar", "pub fn bar() {}") is None
 
 
+# ---------- Module-item stripping ----------
+
+def test_strip_module_items_removes_use_lines():
+    gen = TDDGenerator()
+    code = (
+        "use crate::tables::CRC32_TABLE;\n"
+        "use core::num::Wrapping;\n"
+        "\n"
+        "pub fn crc32(input: &[u8]) -> u32 {\n"
+        "    0\n"
+        "}\n"
+    )
+    result = gen._strip_module_items(code)
+    assert "use crate" not in result
+    assert "use core" not in result
+    assert "pub fn crc32" in result
+
+
+def test_strip_module_items_removes_static_and_const():
+    gen = TDDGenerator()
+    code = (
+        "static BASE: u32 = 65521;\n"
+        "const NMAX: usize = 5552;\n"
+        "pub fn adler32(input: &[u8]) -> u32 {\n"
+        "    let base = 65521u32;\n"
+        "    0\n"
+        "}\n"
+    )
+    result = gen._strip_module_items(code)
+    assert "static BASE" not in result
+    assert "const NMAX" not in result
+    assert "pub fn adler32" in result
+    # Body content must survive
+    assert "let base = 65521u32;" in result
+
+
+def test_strip_module_items_keeps_const_fn():
+    gen = TDDGenerator()
+    code = (
+        "const fn helper() -> u32 { 42 }\n"
+        "pub fn main_algo(x: u32) -> u32 {\n"
+        "    helper() + x\n"
+        "}\n"
+    )
+    result = gen._strip_module_items(code)
+    # const fn is a function, not a module-level const — it should be kept
+    assert "const fn helper" in result
+    assert "pub fn main_algo" in result
+
+
+def test_strip_module_items_preserves_items_after_fn():
+    """Items (use/static/const) INSIDE or after the function must survive."""
+    gen = TDDGenerator()
+    code = (
+        "use crate::leaked_import;\n"
+        "pub fn foo() -> u32 {\n"
+        "    static INNER: u32 = 1;\n"
+        "    INNER\n"
+        "}\n"
+        "const AFTER: u32 = 99;\n"
+    )
+    result = gen._strip_module_items(code)
+    assert "use crate::leaked_import" not in result
+    # Items inside or after the fn body are untouched
+    assert "static INNER" in result
+    assert "const AFTER" in result
+
+
+def test_strip_module_items_no_fn_returns_unchanged():
+    gen = TDDGenerator()
+    code = "use crate::foo;\nconst X: u32 = 1;\n"
+    result = gen._strip_module_items(code)
+    assert result == code
+
+
 # ---------- Full pipeline (mocked LLM) ----------
 
 class _FakeLLM:

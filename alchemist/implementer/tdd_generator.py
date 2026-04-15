@@ -315,6 +315,10 @@ class TDDGenerator:
             # Deterministic cleanup
             new_fn, _ = scrub_rust(new_fn)
 
+            # Strip leaked module-level items (use/static/const) the LLM
+            # may have emitted above the function definition.
+            new_fn = self._strip_module_items(new_fn)
+
             # Anti-stub check
             stub_violations = scan_text("pending.rs", new_fn)
             if stub_violations:
@@ -480,6 +484,7 @@ class TDDGenerator:
 
         def splicer(body: str) -> bool:
             body, _ = scrub_rust(body)
+            body = self._strip_module_items(body)
             if scan_text("pending.rs", body):
                 return False
             replaced = self._replace_fn_in_source(original_source, alg.name, body)
@@ -563,6 +568,50 @@ class TDDGenerator:
         if ret in ("", "()"):
             return f"pub fn {alg.name}({', '.join(params)})"
         return f"pub fn {alg.name}({', '.join(params)}) -> {ret}"
+
+    # --- Module-item stripping ---
+
+    @staticmethod
+    def _strip_module_items(code: str) -> str:
+        """Remove module-level items (use/static/const) that the LLM emits
+        above the function definition.
+
+        The LLM sometimes prefixes its response with lines like
+        ``use crate::foo;`` or ``static X: u32 = ...;``.  These leak into
+        the file even after a revert because ``_replace_fn_in_source`` only
+        replaces from the function signature onwards.
+
+        This helper strips such lines that appear *before* the first
+        ``pub fn`` / ``fn`` line.  ``const fn`` is kept (it is a function
+        qualifier, not a module-level const binding).
+        """
+        lines = code.splitlines(keepends=True)
+        first_fn_idx: int | None = None
+        for idx, line in enumerate(lines):
+            stripped = line.lstrip()
+            # Match "pub fn", "pub(crate) fn", "fn", "pub const fn", etc.
+            if re.match(r"(?:pub\s*(?:\([^)]*\)\s*)?)?(?:async\s+|unsafe\s+|const\s+)*fn\s", stripped):
+                first_fn_idx = idx
+                break
+
+        if first_fn_idx is None:
+            # No function found — return as-is (caller will reject anyway)
+            return code
+
+        kept: list[str] = []
+        for idx, line in enumerate(lines):
+            if idx < first_fn_idx:
+                stripped = line.lstrip()
+                # Drop lines that are module-level items
+                if re.match(r"use\s", stripped):
+                    continue
+                if re.match(r"static\s", stripped):
+                    continue
+                # "const " but NOT "const fn"
+                if re.match(r"const\s", stripped) and not re.match(r"const\s+fn\s", stripped):
+                    continue
+            kept.append(line)
+        return "".join(kept)
 
     # --- Source splicing ---
 
