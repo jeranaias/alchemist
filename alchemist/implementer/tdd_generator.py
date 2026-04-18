@@ -639,16 +639,29 @@ class TDDGenerator:
         the exact field names and types to generate compiling code. We scan
         the workspace's types module file for struct definitions that match
         any type name appearing in the function's parameters.
+
+        Follows type references transitively: if DeflateStream has a field
+        `state: DeflateState`, both structs are included. Depth-limited to
+        avoid runaway inclusion of every shared type.
         """
+        _STDLIB_GENERIC_NAMES = {
+            "Vec", "Option", "Result", "Box", "String", "HashMap",
+            "Arc", "Mutex", "Rc", "RefCell", "Cow", "Rc", "Cell",
+            "BTreeMap", "BTreeSet", "HashSet", "VecDeque",
+        }
+
+        def _collect_type_names(type_str: str) -> set[str]:
+            names: set[str] = set()
+            for m in re.finditer(r"\b([A-Z]\w+)\b", type_str or ""):
+                name = m.group(1)
+                if name not in _STDLIB_GENERIC_NAMES:
+                    names.add(name)
+            return names
+
         # Collect type names from parameter types
         type_names_wanted: set[str] = set()
         for p in alg.inputs or []:
-            # Extract PascalCase identifiers from the type string
-            for m in re.finditer(r"\b([A-Z]\w+)\b", p.rust_type or ""):
-                name = m.group(1)
-                if name not in ("Vec", "Option", "Result", "Box", "String", "HashMap",
-                                "Arc", "Mutex", "Rc", "RefCell"):
-                    type_names_wanted.add(name)
+            type_names_wanted |= _collect_type_names(p.rust_type)
 
         if not type_names_wanted:
             return "(no shared types referenced by this function's parameters)"
@@ -665,28 +678,42 @@ class TDDGenerator:
         if not types_files:
             return "(no types.rs found in workspace)"
 
-        # Extract struct/enum definitions matching wanted names
-        blocks: list[str] = []
-        for tf in types_files:
-            text = tf.read_text(encoding="utf-8", errors="replace")
-            for name in type_names_wanted:
-                # Find `pub struct Name { ... }` or `pub enum Name { ... }`
-                pattern = re.compile(
-                    rf"((?:#\[[^\]]*\]\s*\n)*"
-                    rf"pub\s+(?:struct|enum|type)\s+{re.escape(name)}\b[^{{;]*"
-                    rf"(?:\{{[^}}]*\}}|;))",
-                    re.MULTILINE | re.DOTALL,
-                )
-                m = pattern.search(text)
-                if m:
-                    defn = m.group(0).strip()
-                    # Truncate very large structs to avoid blowing up the prompt
-                    if len(defn) > 2000:
-                        defn = defn[:2000] + "\n    // ... (truncated)"
-                    blocks.append(f"```rust\n{defn}\n```")
+        # Walk the type-reference graph, collecting all referenced structs.
+        # Depth-limited so we don't include every shared type in the workspace.
+        MAX_DEPTH = 3
+        all_text = "\n".join(
+            tf.read_text(encoding="utf-8", errors="replace") for tf in types_files
+        )
+        found_defs: dict[str, str] = {}
+        to_visit: list[tuple[str, int]] = [(n, 0) for n in type_names_wanted]
+        while to_visit:
+            name, depth = to_visit.pop()
+            if name in found_defs or depth > MAX_DEPTH:
+                continue
+            pattern = re.compile(
+                rf"((?:#\[[^\]]*\]\s*\n)*"
+                rf"pub\s+(?:struct|enum|type)\s+{re.escape(name)}\b[^{{;]*"
+                rf"(?:\{{[^}}]*\}}|;))",
+                re.MULTILINE | re.DOTALL,
+            )
+            m = pattern.search(all_text)
+            if not m:
+                continue
+            defn = m.group(0).strip()
+            if len(defn) > 2000:
+                defn = defn[:2000] + "\n    // ... (truncated)"
+            found_defs[name] = defn
+            # Recurse into types referenced inside this struct's body.
+            for sub in _collect_type_names(defn):
+                if sub not in found_defs:
+                    to_visit.append((sub, depth + 1))
 
-        if not blocks:
+        if not found_defs:
             return "(referenced types not found in workspace types.rs)"
+        # Stable order — primary type first, then alphabetical.
+        primary = sorted(type_names_wanted & found_defs.keys())
+        rest = sorted(k for k in found_defs if k not in type_names_wanted)
+        blocks = [f"```rust\n{found_defs[n]}\n```" for n in primary + rest]
 
         return (
             "The following types are used in this function's parameters. "

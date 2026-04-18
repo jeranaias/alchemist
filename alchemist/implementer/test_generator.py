@@ -134,6 +134,49 @@ def _can_accept_byte_slice(alg: AlgorithmSpec) -> bool:
     return False
 
 
+def _has_canonical_shape_for_category(alg: AlgorithmSpec) -> bool:
+    """Guard against emitting catalog tests for helpers that don't match
+    the shape the template assumes.
+
+    Templates expect:
+      - checksum: `fn(&[u8]) -> u32` or `fn(u32, &[u8]) -> u32`
+      - hash:     `fn(&[u8]) -> [u8; N] | Vec<u8>`
+      - cipher:   `fn(key, &[u8]) -> Vec<u8>` (roundtrip)
+      - compression/decompression: `fn(&[u8]) -> Vec<u8>` or
+        `fn(&mut [u8], &[u8]) -> Result<(), _>`
+
+    Functions like `deflateSetDictionary` have `&[u8]` inputs but return
+    Result<()> and take `&mut DeflateStream` — the compression template
+    emits `decompressed.as_slice()` against them and fails to compile.
+    """
+    ret = (alg.return_type or "").strip()
+    cat = alg.category
+
+    # Struct/stream state params disqualify canonical catalog templates.
+    for p in alg.inputs or []:
+        t = (p.rust_type or "")
+        if re.search(r"\b(?:Deflate|Inflate|Stream|State)\w*\b", t):
+            return False
+
+    if cat == "checksum":
+        # Expect a scalar numeric return
+        return bool(re.match(r"^(?:u|i)\d+$", ret))
+    if cat == "hash":
+        # Expect bytes-or-array return
+        return ("[u8" in ret) or ("Vec<u8>" in ret)
+    if cat == "cipher":
+        return ("Vec<u8>" in ret) or ("[u8" in ret) or ret.startswith("Result<")
+    if cat in ("compression", "decompression"):
+        # compress-template calls `.as_slice()` on the result. That works
+        # only when the function literally returns a Vec<u8> or Result<Vec<u8>>.
+        if "Vec<u8>" in ret:
+            return True
+        if re.search(r"Result<\s*Vec<u8>", ret):
+            return True
+        return False
+    return True
+
+
 def _emit_catalog_test_checksum(
     fn_name: str, vec: StdTestVector, idx: int,
     alg: AlgorithmSpec | None = None,
@@ -297,8 +340,12 @@ def emit_module_test_block(
             lines.append(_emit_spec_test(fn_name, v, i))
             stats["spec"] += 1
             emitted_any = True
-        # 2. Standards catalog — only when the signature can accept a byte slice.
-        if _can_accept_byte_slice(alg):
+        # 2. Standards catalog — only when the signature matches a recognizable
+        #    canonical shape. The compression/cipher templates assume very
+        #    specific APIs (Vec<u8> return with .as_slice(), etc.). Emitting
+        #    them against arbitrary deflate*/inflate* helpers produces
+        #    uncompilable tests that poison the whole crate's test run.
+        if _can_accept_byte_slice(alg) and _has_canonical_shape_for_category(alg):
             cat_vectors = catalog_lookup(alg.name)
             for i, v in enumerate(cat_vectors or []):
                 if alg.category == "checksum":
