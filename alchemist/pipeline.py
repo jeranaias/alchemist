@@ -203,6 +203,18 @@ def run_architect_stage(
     ]
     designer = CrateDesigner(config or AlchemistConfig())
     arch = designer.design(specs, project_name=name, source_description=str(source))
+
+    # Post-architect trait extraction: fill in traits for compatible-signature
+    # families the architect might have missed. Phase 0.5 requirement 4.
+    from alchemist.architect.trait_extractor import extract_traits
+    new_traits = extract_traits(specs, arch)
+    if new_traits:
+        arch.traits = list(arch.traits) + new_traits
+        console.print(
+            f"[cyan]trait extractor: added {len(new_traits)} trait(s): "
+            f"{', '.join(t.name for t in new_traits)}[/cyan]"
+        )
+
     (source / ".alchemist" / "architecture.json").write_text(
         arch.model_dump_json(indent=2), encoding="utf-8"
     )
