@@ -81,15 +81,26 @@ to `strm.state.X` (Rust flattens pointer deref). When zlib uses the
 
 ## Mutability
 
-Rust parameters are immutable by default. If the C body reassigns a parameter
-or advances a pointer, shadow it with a `let mut` binding at the top of the
-function body:
+Rust parameters are immutable by default. Before writing the body, audit
+EVERY parameter: if the C body reassigns it, mutates it, or advances a
+pointer through it, shadow it with a `let mut` binding as the FIRST
+statement of the function body.
 
-    pub fn f(buf: &[u8], len: usize) -> u32 {
-        let mut buf = buf;     // so `buf = &buf[16..];` works later
-        let mut len = len;     // so `len -= 16;` works later
-        // ... rest of body
+When in doubt, shadow. Over-shadowing is harmless (unused_mut warnings).
+Under-shadowing is a compile error.
+
+    // C has: `adler -= BASE; buf += 16; len -= 16;`
+    pub fn f(adler: u32, buf: &[u8], len: usize) -> u32 {
+        let mut adler = adler;   // REQUIRED: C reassigns it
+        let mut buf = buf;       // REQUIRED: C advances the pointer
+        let mut len = len;       // REQUIRED: C decrements it
+        // ... rest of body can freely use `adler -= 65521; buf = &buf[16..]; len -= 16;`
     }
+
+Walk through the C source once looking for `x = y`, `x += y`, `x++`, `x--`,
+`++x`, `--x`, `x = foo(x)` — every such variable MUST be shadowed if it's
+a parameter. This applies even to pointer-like parameters: `buf = &buf[16..]`
+requires `let mut buf = buf;` above it.
 
 ## Return type discipline
 
