@@ -85,11 +85,122 @@ def validate_architecture(
     _check_empty_crates(arch, report)
     _check_workspace_consistency(arch, report)
 
+    # Phase 0.5 quality gates
     if specs is not None:
         _check_spec_coverage(arch, specs, report)
         _check_module_assignment(arch, specs, report)
+        _check_state_wrappers_for_large_states(arch, specs, report)
+        _check_builders_for_parameterized_init(arch, specs, report)
+    _check_traits_cover_compatible_signatures(arch, specs, report)
+    _check_per_crate_error_types(arch, report)
 
     return report
+
+
+def _check_state_wrappers_for_large_states(
+    arch: CrateArchitecture, specs: list[ModuleSpec], report: ValidationReport,
+) -> None:
+    """Every raw struct with >10 fields must have a StateWrapperSpec."""
+    # Collect all shared types with field counts.
+    for mod in specs:
+        for t in getattr(mod, "shared_types", []) or []:
+            rd = getattr(t, "rust_definition", "") or ""
+            # Rough field count: semicolon or comma-terminated lines inside the struct body
+            if not rd.lstrip().startswith("#[") and "pub struct" not in rd:
+                continue
+            # Count lines ending in `,` inside the struct block.
+            import re as _re
+            body_match = _re.search(r"pub\s+struct\s+\w+[^{]*\{([^}]*)\}", rd, _re.DOTALL)
+            if not body_match:
+                continue
+            field_count = len([
+                line for line in body_match.group(1).splitlines()
+                if line.strip().rstrip(",").endswith((")", "]", ">", "u8", "u16", "u32",
+                                                       "u64", "i8", "i16", "i32", "i64",
+                                                       "usize", "isize", "bool"))
+                or line.strip().endswith(",")
+            ])
+            if field_count <= 10:
+                continue
+            # Has a wrapper?
+            wrappers = [w.inner_state for w in arch.state_wrappers]
+            if t.name not in wrappers:
+                report.add(ValidationIssue(
+                    rule="state_wrapper_missing",
+                    severity=Severity.error,
+                    message=(
+                        f"Raw state {t.name} exposes {field_count} fields. "
+                        f"Architecture must define a StateWrapperSpec that hides it "
+                        f"(Phase 0.5 requirement 5)."
+                    ),
+                    location=t.name,
+                ))
+
+
+def _check_builders_for_parameterized_init(
+    arch: CrateArchitecture, specs: list[ModuleSpec], report: ValidationReport,
+) -> None:
+    """Every *Init* function with >1 meaningful param needs a BuilderSpec."""
+    import re as _re
+    init_re = _re.compile(r"[Ii]nit\d*_?$")
+    builder_targets = {b.built_type for b in arch.builders}
+    for mod in specs:
+        for alg in mod.algorithms or []:
+            if not init_re.search(alg.name):
+                continue
+            meaningful_params = [
+                p for p in (alg.inputs or [])
+                if "Stream" not in (p.rust_type or "") and "State" not in (p.rust_type or "")
+            ]
+            if len(meaningful_params) <= 1:
+                continue
+            # Rough built-type heuristic: XyzInit2_ → Xyz
+            built = _re.sub(r"[Ii]nit\d*_?$", "", alg.name).strip("_").title()
+            if not built:
+                continue
+            if built not in builder_targets:
+                report.add(ValidationIssue(
+                    rule="builder_missing",
+                    severity=Severity.warning,
+                    message=(
+                        f"Parameterized init {alg.name}({len(meaningful_params)} params) "
+                        f"should have a BuilderSpec (Phase 0.5 requirement 6)."
+                    ),
+                    location=alg.name,
+                ))
+
+
+def _check_traits_cover_compatible_signatures(
+    arch: CrateArchitecture, specs: list[ModuleSpec] | None, report: ValidationReport,
+) -> None:
+    """Architecture with multiple crates should declare at least one trait."""
+    if len(arch.crates) >= 3 and not arch.traits:
+        report.add(ValidationIssue(
+            rule="no_traits_declared",
+            severity=Severity.warning,
+            message=(
+                "Multi-crate architecture declares zero traits. Functions that share a "
+                "signature shape across crates should share a trait (Phase 0.5 requirement 4)."
+            ),
+        ))
+
+
+def _check_per_crate_error_types(
+    arch: CrateArchitecture, report: ValidationReport,
+) -> None:
+    """Each crate with >3 functions should have its own error type."""
+    crates_with_errors = {e.crate for e in arch.error_types}
+    for c in arch.crates:
+        if len(c.modules) >= 2 and c.name not in crates_with_errors:
+            report.add(ValidationIssue(
+                rule="per_crate_error_missing",
+                severity=Severity.warning,
+                message=(
+                    f"Crate {c.name} has {len(c.modules)} modules but no dedicated "
+                    f"error type. Phase 0.5 requirement 7 asks for per-crate error enums."
+                ),
+                location=c.name,
+            ))
 
 
 # ─── Validators ─────────────────────────────────────────────────────────
