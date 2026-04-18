@@ -62,6 +62,25 @@ TYPO_FIXES = [
 def scrub_rust(code: str) -> tuple[str, list[str]]:
     """Apply regex fixes to Rust code. Returns (fixed_code, list_of_fixes_applied)."""
     fixes = []
+    # First-line gate: if the code starts with an obvious error signature —
+    # HTTP response bodies, Python tracebacks, JSON error envelopes —
+    # treat the whole input as contaminated and reject it. This is a
+    # belt-and-suspenders against any LLM-client path that slips through
+    # with the error as content.
+    leading = code.lstrip()[:400]
+    contamination_signs = (
+        "ERROR: Server error",
+        "ERROR: HTTPError",
+        "ERROR: httpx",
+        "Traceback (most recent call last)",
+        '{"error":',
+        "upstream connect error",
+        "Service Unavailable",
+    )
+    if any(sig in leading for sig in contamination_signs):
+        fixes.append("REJECTED: input contains error/non-code contamination")
+        return "", fixes
+
     for pattern, replacement in TYPO_FIXES:
         new_code, n = pattern.subn(replacement, code)
         if n > 0:

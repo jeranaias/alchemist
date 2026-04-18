@@ -206,6 +206,36 @@ class TestUnicodeIssues:
         assert "\ufffd" not in out
 
 
+class TestContaminationGate:
+    """Reject non-code inputs (error bodies, tracebacks) outright."""
+
+    def test_reject_503_error_body(self):
+        poison = (
+            "ERROR: Server error '503 Service Unavailable' "
+            "for url 'http://100.109.172.64:8090/v1/chat/completions'"
+        )
+        out, fixes = scrub_rust(poison)
+        assert out == ""
+        assert any("REJECTED" in f for f in fixes)
+
+    def test_reject_python_traceback(self):
+        poison = "Traceback (most recent call last):\n  File ...\nValueError: x"
+        out, fixes = scrub_rust(poison)
+        assert out == ""
+        assert any("REJECTED" in f for f in fixes)
+
+    def test_reject_json_error_envelope(self):
+        poison = '{"error": "bad request"}'
+        out, fixes = scrub_rust(poison)
+        assert out == ""
+
+    def test_accepts_code_with_error_word_in_comment(self):
+        """ERROR as a plain identifier in real code must NOT be rejected."""
+        ok = "pub fn handle() -> Result<(), Error> {\n    Ok(())\n}"
+        out, _ = scrub_rust(ok)
+        assert "pub fn handle" in out
+
+
 class TestComboFixes:
     """Multiple rules applied to a real broken file."""
 
