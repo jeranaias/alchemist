@@ -306,6 +306,23 @@ class TDDGenerator:
             attempt.last_error = f"module file missing: {module_path}"
             return attempt
 
+        # Short-circuit: if the function has no verifiable test vectors
+        # upfront, skip iteration entirely. Iterating would burn LLM calls
+        # on code we can't verify. P2 surfaces the gap rather than silently
+        # accepting it.
+        from alchemist.standards import lookup_test_vectors
+        has_spec_vectors = bool(alg.test_vectors)
+        has_catalog_vectors = bool(lookup_test_vectors(alg.name))
+        if not has_spec_vectors and not has_catalog_vectors:
+            attempt.last_error = (
+                "no verifiable test vectors — add spec.test_vectors, extend "
+                "fuzz_vectors bindings, or add to standards catalog"
+            )
+            console.print(
+                f"  [red]{alg.name}: no test vectors — skipping (cannot verify)[/red]"
+            )
+            return attempt
+
         test_name_prefix = f"test_{alg.name}_"
         fallback_test = f"smoke_{alg.name}"
         previous_failure = ""  # carries test output into next iteration prompt
