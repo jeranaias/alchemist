@@ -79,6 +79,32 @@ to `strm.state.X` (Rust flattens pointer deref). When zlib uses the
     use a raw jump-equivalent.
   - Early `return VALUE;` → `return VALUE;` (Rust allows it)
 
+## Mutability
+
+Rust parameters are immutable by default. If the C body reassigns a parameter
+or advances a pointer, shadow it with a `let mut` binding at the top of the
+function body:
+
+    pub fn f(buf: &[u8], len: usize) -> u32 {
+        let mut buf = buf;     // so `buf = &buf[16..];` works later
+        let mut len = len;     // so `len -= 16;` works later
+        // ... rest of body
+    }
+
+## Return type discipline
+
+The signature's return type is LAW. Every `return` expression MUST match it.
+If your intermediate variables are a wider type (e.g., u64 for overflow
+safety but the return type is u32), cast explicitly: `return result as u32;`
+not `return result;` hoping for implicit conversion.
+
+## Numeric literals and types
+
+Use typed suffixes on numeric literals when mixing types: `65521u32`, not
+bare `65521`. Inside arithmetic with u64 variables, use `u64` literals.
+When the C code uses `unsigned long` constants that fit in u32, prefer
+u32 unless the algorithm requires wider intermediate values.
+
 Return ONLY the Rust function definition — signature + body — no explanation,
 no markdown, no additional text.
 """
