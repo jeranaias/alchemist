@@ -58,8 +58,19 @@ def lint_crc32(source: str, alg: AlgorithmSpec) -> list[SemanticFinding]:
       - variant:ieee_reflected → MUST use 0xEDB88320 AND shift-right (c >> 1).
       - variant:ieee_non_reflected → MUST use 0x04C11DB7 AND shift-left (c << 1).
       - variant:castagnoli → MUST use 0x82F63B78.
+
+    Only applied to functions that take a byte buffer (&[u8], *const u8, etc).
+    Helper functions like polynomial multipliers and combine operators don't
+    need the polynomial constant embedded — they operate on arbitrary polys.
     """
     findings: list[SemanticFinding] = []
+    # Skip polynomial checks for helpers that don't process bytes.
+    takes_bytes = any(
+        re.search(r"\[u8\]|\*\s*(?:const|mut)\s*u8|Vec<\s*u8\s*>|&\s*str", p.rust_type or "")
+        for p in (alg.inputs or [])
+    )
+    if not takes_bytes:
+        return findings
     variant = _variant_of(alg)
     has_reflected_poly = bool(re.search(r"0x[eE][dD][bB]8_?8320", source))
     has_non_reflected_poly = bool(re.search(r"0x04_?[cC]1_?1[dD][bB]7", source))

@@ -71,16 +71,28 @@ def generate_init_template(alg: AlgorithmSpec) -> str | None:
             name = f"r#{name}"
         param_names.append(name)
 
-    # Silence unused-variable warnings
-    for n in param_names:
+    state_idx = params.index(state_param) if state_param is not None else -1
+
+    # Silence unused-variable warnings for every param EXCEPT the state one,
+    # which we're about to use via dereference-assignment.
+    for i, n in enumerate(param_names):
+        if i == state_idx:
+            continue
         lines.append(f"    let _ = {n};")
 
     if state_param is not None:
-        # Find the state param's sanitized name
-        idx = params.index(state_param)
-        state_name = param_names[idx]
-        # Dereference and assign default
-        lines.append(f"    *{state_name} = Default::default();")
+        state_name = param_names[state_idx]
+        # Dereference and assign default. We name the struct type explicitly
+        # so `Default::default()` resolves without type-inference ambiguity.
+        stype = (state_param.rust_type or "").strip()
+        # Strip a leading `&mut ` or `&` to get the owned type name.
+        owned = re.sub(r"^&\s*mut\s+", "", stype).strip()
+        owned = re.sub(r"^&\s*", "", owned).strip()
+        # If it's `Option<&mut T>` or similar, fall back to Default::default().
+        if "<" in owned:
+            lines.append(f"    *{state_name} = Default::default();")
+        else:
+            lines.append(f"    *{state_name} = {owned}::default();")
 
     # Build return value based on return type
     if ret in ("", "()"):
