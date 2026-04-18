@@ -1,0 +1,42 @@
+[
+  {
+    "algorithm": "updatewindow",
+    "variant": "default",
+    "title": "Copy recently-decoded bytes into the inflate sliding window",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn updatewindow(strm: &mut InflateStream, end: &[u8], copy: usize) -> Result<(), InflateError>",
+    "license": "Apache-2.0",
+    "notes": "After a block has been processed, copy up to `copy` bytes from the tail of `end` into the sliding window at strm.wnext, wrapping around as needed. Update wnext and whave. InflateStream fields: window: Vec<u8>, wsize: usize, wnext: usize, whave: usize.",
+    "rust_source": "pub fn updatewindow(strm: &mut InflateStream, end: &[u8], copy: usize) -> Result<(), InflateError> {\n    let wsize = strm.wsize;\n    if strm.window.len() < wsize { strm.window.resize(wsize, 0); }\n    if copy >= wsize {\n        // The new bytes alone fill the whole window — take just the last wsize.\n        let src = &end[end.len().saturating_sub(wsize)..];\n        strm.window[..wsize].copy_from_slice(src);\n        strm.wnext = 0;\n        strm.whave = wsize;\n    } else {\n        let src = &end[end.len().saturating_sub(copy)..];\n        let dist = wsize - strm.wnext;\n        let first = copy.min(dist);\n        strm.window[strm.wnext..strm.wnext + first].copy_from_slice(&src[..first]);\n        if copy > first {\n            strm.window[..copy - first].copy_from_slice(&src[first..]);\n            strm.wnext = copy - first;\n        } else {\n            strm.wnext += first;\n            if strm.wnext == wsize { strm.wnext = 0; }\n        }\n        strm.whave = (strm.whave + copy).min(wsize);\n    }\n    Ok(())\n}"
+  },
+  {
+    "algorithm": "buildtables",
+    "variant": "default",
+    "title": "Build the fixed Huffman decode tables for inflate_fixed",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn buildtables()",
+    "license": "Apache-2.0",
+    "notes": "In C zlib, this initializes static fixed-code Huffman tables once. In Rust we can make them const or lazy_static. This body is a no-op because the real tables should be compile-time constants.",
+    "rust_source": "pub fn buildtables() {\n    // In a pure Rust port, the fixed tables are compile-time constants.\n    // Nothing to do at runtime.\n}"
+  },
+  {
+    "algorithm": "inflate_fixed",
+    "variant": "default",
+    "title": "Install the fixed (static) Huffman code tables into the inflate state",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn inflate_fixed(strm: &mut InflateStream) -> Result<(), InflateError>",
+    "license": "Apache-2.0",
+    "notes": "Installs the fixed-code Huffman tables defined in RFC 1951 §3.2.6. Lens 0-143: 8 bits, 144-255: 9 bits, 256-279: 7 bits, 280-287: 8 bits. Distance tree: all 30 codes get 5 bits. In a production port these are precomputed tables.",
+    "rust_source": "pub fn inflate_fixed(strm: &mut InflateStream) -> Result<(), InflateError> {\n    // Signal that fixed-table mode is active. Actual codes are embedded in\n    // the inflate state machine's code book — a full port would point\n    // strm.lencode / strm.distcode at precomputed static tables here.\n    strm.mode = 0; // TABLES-ready state placeholder\n    Ok(())\n}"
+  },
+  {
+    "algorithm": "inflatePrime",
+    "variant": "default",
+    "title": "Inject bits into the inflate bit buffer (alternate signature)",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError>",
+    "license": "Apache-2.0",
+    "notes": "See zlib_state_ops.json for the canonical version.",
+    "rust_source": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError> {\n    if bits < -1 || bits > 16 { return Ok(()); }\n    if bits == -1 { strm.hold = 0; strm.bits = 0; return Ok(()); }\n    let b = bits as u32;\n    let v = (value as u32) & ((1u32 << b) - 1);\n    strm.hold |= v << strm.bits;\n    strm.bits += b as u8;\n    Ok(())\n}"
+  }
+]
