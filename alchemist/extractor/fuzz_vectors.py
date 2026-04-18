@@ -209,16 +209,20 @@ def _crc32_adapter(fn, data: bytes) -> int:
     return int(fn(0, buf, len(data)))
 
 
-def _byte_swap_adapter(fn, data: bytes) -> int:
-    """Adapter for byte_swap: interpret first 8 bytes of input as a u64 to swap.
-
-    The fuzz loop passes random byte strings; byte_swap is u64 → u64, so we
-    pack the first 8 bytes (padding with zeros) as little-endian and pass
-    that as the input value.
-    """
+def _crc32_combine_gen64_adapter(fn, data: bytes) -> int:
+    """crc32_combine_gen64(len2): len2 derived from input bytes as u64."""
     padded = bytes(data[:8].ljust(8, b"\x00"))
-    word = int.from_bytes(padded, "little")
-    return int(fn(word))
+    len2 = int.from_bytes(padded, "little")
+    return int(fn(len2))
+
+
+def _crc32_combine_op_adapter(fn, data: bytes) -> int:
+    """crc32_combine_op(crc1, crc2, op): three u32 values packed from input."""
+    padded = bytes(data[:12].ljust(12, b"\x00"))
+    crc1 = int.from_bytes(padded[0:4], "little")
+    crc2 = int.from_bytes(padded[4:8], "little")
+    op = int.from_bytes(padded[8:12], "little")
+    return int(fn(crc1, crc2, op))
 
 
 ZLIB_BINDINGS: dict[str, CFunctionBinding] = {
@@ -245,6 +249,18 @@ ZLIB_BINDINGS: dict[str, CFunctionBinding] = {
         restype=ctypes.c_ulong,
         argtypes=(ctypes.c_ulong, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t),
         adapter=_crc32_adapter,
+    ),
+    "crc32_combine_gen64": CFunctionBinding(
+        c_name="crc32_combine_gen64",
+        restype=ctypes.c_ulong,
+        argtypes=(ctypes.c_longlong,),
+        adapter=_crc32_combine_gen64_adapter,
+    ),
+    "crc32_combine_op": CFunctionBinding(
+        c_name="crc32_combine_op",
+        restype=ctypes.c_ulong,
+        argtypes=(ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong),
+        adapter=_crc32_combine_op_adapter,
     ),
 }
 
