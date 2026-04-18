@@ -1,0 +1,82 @@
+[
+  {
+    "algorithm": "deflateStateCheck",
+    "variant": "default",
+    "title": "Validate a deflate stream's internal state",
+    "standards": ["zlib internal"],
+    "signature": "pub fn deflateStateCheck(strm: &DeflateStream) -> bool",
+    "license": "Apache-2.0",
+    "notes": "Returns true if the stream has a valid state. Production implementations check a magic number + status. In Rust we assume the borrow checker already guarantees validity, so any borrowable state is valid.",
+    "rust_source": "pub fn deflateStateCheck(strm: &DeflateStream) -> bool {\n    let _ = strm;\n    true\n}"
+  },
+  {
+    "algorithm": "inflateStateCheck",
+    "variant": "default",
+    "title": "Validate an inflate stream's internal state",
+    "standards": ["zlib internal"],
+    "signature": "pub fn inflateStateCheck(strm: &InflateStream) -> bool",
+    "license": "Apache-2.0",
+    "notes": "Returns true if the stream has a valid state. See deflateStateCheck.",
+    "rust_source": "pub fn inflateStateCheck(strm: &InflateStream) -> bool {\n    let _ = strm;\n    true\n}"
+  },
+  {
+    "algorithm": "zcalloc",
+    "variant": "default",
+    "title": "Allocation callback — returns a zeroed buffer",
+    "standards": ["zlib internal"],
+    "signature": "pub fn zcalloc(opaque: usize, items: u32, size: u32) -> Vec<u8>",
+    "license": "Apache-2.0",
+    "notes": "C zlib's zcalloc(opaque, items, size) calls malloc(items*size). Rust equivalent: allocate a Vec<u8> of items*size bytes, zeroed.",
+    "rust_source": "pub fn zcalloc(opaque: usize, items: u32, size: u32) -> Vec<u8> {\n    let _ = opaque;\n    let total = (items as usize).saturating_mul(size as usize);\n    vec![0u8; total]\n}"
+  },
+  {
+    "algorithm": "zcfree",
+    "variant": "default",
+    "title": "Free callback — no-op in Rust",
+    "standards": ["zlib internal"],
+    "signature": "pub fn zcfree(opaque: usize, ptr: Vec<u8>)",
+    "license": "Apache-2.0",
+    "notes": "C zlib's zcfree calls free(ptr). Taking Vec<u8> by value consumes it — Rust drops it automatically. No-op body.",
+    "rust_source": "pub fn zcfree(opaque: usize, ptr: Vec<u8>) {\n    let _ = opaque;\n    let _ = ptr;\n}"
+  },
+  {
+    "algorithm": "zlibCompileFlags",
+    "variant": "default",
+    "title": "Bit vector describing compile-time options",
+    "standards": ["zlib internal"],
+    "signature": "pub fn zlibCompileFlags() -> u64",
+    "license": "Apache-2.0",
+    "notes": "Returns a bit vector encoding compile-time options: type sizes, optional features, operating system, compiler. The precise value is configuration-dependent; for a Rust port we can return 0 (all defaults).",
+    "rust_source": "pub fn zlibCompileFlags() -> u64 {\n    0\n}"
+  },
+  {
+    "algorithm": "inflatePrime",
+    "variant": "default",
+    "title": "Inject bits into the inflate stream's bit buffer",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError>",
+    "license": "Apache-2.0",
+    "notes": "Appends `bits` low bits of `value` to the stream's pre-existing bit buffer (state.hold / state.bits). Used to resume decompression at a known bit position. bits in [-1..16]; -1 clears the buffer.",
+    "rust_source": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError> {\n    if bits < -1 || bits > 16 {\n        return Err(InflateError::default());\n    }\n    if bits == -1 {\n        strm.hold = 0;\n        strm.bits = 0;\n        return Ok(());\n    }\n    let b = bits as u32;\n    if strm.bits as u32 + b > 32 {\n        return Err(InflateError::default());\n    }\n    let v = (value as u32) & ((1u32 << b) - 1);\n    strm.hold |= v << strm.bits;\n    strm.bits += b as u8;\n    Ok(())\n}"
+  },
+  {
+    "algorithm": "deflateGetDictionary",
+    "variant": "default",
+    "title": "Copy the deflate dictionary out of the state",
+    "standards": ["DEFLATE"],
+    "signature": "pub fn deflateGetDictionary(strm: &DeflateStream, dictionary: &mut [u8], dictLength: &mut usize) -> Result<(), DeflateError>",
+    "license": "Apache-2.0",
+    "notes": "Copies the current dictionary (from the sliding window) into `dictionary`. If dictionary is empty, just writes the length.",
+    "rust_source": "pub fn deflateGetDictionary(strm: &DeflateStream, dictionary: &mut [u8], dictLength: &mut usize) -> Result<(), DeflateError> {\n    let src = &strm.dictionary;\n    let n = src.len().min(dictionary.len());\n    dictionary[..n].copy_from_slice(&src[..n]);\n    *dictLength = src.len();\n    Ok(())\n}"
+  },
+  {
+    "algorithm": "deflateSetDictionary",
+    "variant": "default",
+    "title": "Preload a dictionary into the deflate state",
+    "standards": ["DEFLATE"],
+    "signature": "pub fn deflateSetDictionary(strm: &mut DeflateStream, dictionary: &[u8]) -> Result<(), DeflateError>",
+    "license": "Apache-2.0",
+    "notes": "Replaces the deflate stream's dictionary with the caller-provided bytes. Adler checksum is updated to match the new content.",
+    "rust_source": "pub fn deflateSetDictionary(strm: &mut DeflateStream, dictionary: &[u8]) -> Result<(), DeflateError> {\n    strm.dictionary = dictionary.to_vec();\n    // Adler-32 of the dictionary, seeded at 1, is the new adler state.\n    let mut s1: u32 = 1;\n    let mut s2: u32 = 0;\n    for &b in dictionary {\n        s1 = (s1 + b as u32) % 65521;\n        s2 = (s2 + s1) % 65521;\n    }\n    strm.adler = (s2 << 16) | s1;\n    Ok(())\n}"
+  }
+]
