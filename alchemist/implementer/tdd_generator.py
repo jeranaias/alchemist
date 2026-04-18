@@ -351,6 +351,17 @@ class TDDGenerator:
             # Anti-stub check
             stub_violations = scan_text("pending.rs", new_fn)
             if stub_violations:
+                violation_summary = "; ".join(
+                    f"{v.pattern}: {v.snippet.strip()[:80]}" for v in stub_violations[:3]
+                )
+                previous_failure = (
+                    f"## Previous iteration was REJECTED as a stub.\n\n"
+                    f"You wrote:\n```rust\n{new_fn[:1500]}\n```\n\n"
+                    f"Rejection reasons: {violation_summary}\n\n"
+                    f"Write REAL working code. No unimplemented!(), no todo!(), "
+                    f"no 'for this spec we simulate' comments, no empty Ok(()) "
+                    f"bodies. Implement the actual algorithm."
+                )
                 console.print(f"  [yellow]{alg.name}: anti-stub rejected iteration {iteration}[/yellow]")
                 continue
 
@@ -359,7 +370,14 @@ class TDDGenerator:
             # don't burn a cargo check/test cycle on it.
             semantic_findings = _semantic_lint(new_fn, alg)
             if _semantic_has_errors(semantic_findings):
-                previous_failure = _semantic_summary(semantic_findings)
+                previous_failure = (
+                    f"## Previous iteration was REJECTED by the semantic linter.\n\n"
+                    f"You wrote:\n```rust\n{new_fn[:2500]}\n```\n\n"
+                    f"Lint findings:\n{_semantic_summary(semantic_findings)}\n\n"
+                    f"These are algorithm correctness issues, not syntax. Check "
+                    f"your constants, polynomials, and endianness against the "
+                    f"referenced standards."
+                )
                 console.print(
                     f"  [yellow]{alg.name}: semantic lint rejected iter {iteration} — "
                     f"{len([f for f in semantic_findings if f.severity == 'error'])} errors[/yellow]"
@@ -376,9 +394,23 @@ class TDDGenerator:
             # Compile check (crate only)
             ok_compile, cerr = _run_cargo_check(crate_dir, timeout=180)
             if not ok_compile:
-                # Revert and try again with compile-error context
+                # Revert and try again with compile-error context + the
+                # LLM's own failed attempt so it can see what it wrote.
+                # Without the attempt in context, the next prompt shows the
+                # reverted stub (unimplemented!()) and the LLM can't tell
+                # which of its choices broke — it just rewrites similar code.
                 module_path.write_text(current, encoding="utf-8")
                 attempt.last_error = _top_lines(cerr, 3)
+                previous_failure = (
+                    f"## Previous iteration FAILED to compile.\n\n"
+                    f"You wrote this:\n```rust\n{new_fn[:2500]}\n```\n\n"
+                    f"Cargo error output:\n```\n{_top_lines(cerr, 40)}\n```\n\n"
+                    f"Fix the specific compile errors above. Do NOT rewrite from "
+                    f"scratch — identify the offending fields/types/imports and "
+                    f"correct only those. Keep the overall algorithm the same. "
+                    f"Pay special attention to: field names on struct params, "
+                    f"import paths, and type mismatches."
+                )
                 console.print(f"  [yellow]{alg.name}: compile failed, reverting (iter {iteration})[/yellow]")
                 continue
 
@@ -402,7 +434,15 @@ class TDDGenerator:
                 return attempt
 
             attempt.last_error = _top_lines(terr, 5)
-            previous_failure = _top_lines(tout + "\n" + terr, 20)
+            previous_failure = (
+                f"## Previous iteration compiled but FAILED tests.\n\n"
+                f"You wrote:\n```rust\n{new_fn[:2500]}\n```\n\n"
+                f"Test output:\n```\n{_top_lines(tout + chr(10) + terr, 40)}\n```\n\n"
+                f"The code compiles but produces wrong output. Check the "
+                f"expected values in the test and fix the algorithm logic. "
+                f"Most likely causes: off-by-one, wrong initial state, "
+                f"wrong constant, incorrect bit ordering."
+            )
             console.print(f"  [yellow]{alg.name}: tests failed on iter {iteration}[/yellow]")
 
             # Escalate to holistic
