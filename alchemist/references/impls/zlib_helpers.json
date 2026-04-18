@@ -30,6 +30,16 @@
     "rust_source": "pub fn zmemzero(buffer: &mut [u8], len: usize) {\n    let n = len.min(buffer.len());\n    for b in &mut buffer[..n] { *b = 0; }\n}"
   },
   {
+    "algorithm": "byte_swap",
+    "variant": "default",
+    "title": "Reverse the byte order of a 64-bit integer",
+    "standards": ["zlib internal"],
+    "signature": "pub fn byte_swap(word: u64) -> u64",
+    "license": "Apache-2.0",
+    "notes": "Thin wrapper over u64::swap_bytes. The C version handles both 32- and 64-bit words via a macro; Rust's u64::swap_bytes covers both when a u32 is zero-extended.",
+    "rust_source": "pub fn byte_swap(word: u64) -> u64 {\n    word.swap_bytes()\n}"
+  },
+  {
     "algorithm": "bi_reverse",
     "variant": "default",
     "title": "Reverse the bits of a code value",

@@ -253,6 +253,14 @@ def run_implement_stage(
         ModuleSpec.model_validate(json.loads(f.read_text(encoding="utf-8")))
         for f in sorted(specs_dir.glob("*.json"))
     ]
+    # Normalize parameter types before generation. Fixes classes of extractor
+    # drift (Vec<u8> output buffers → &mut [u8], u64 length pointers → &mut usize).
+    from alchemist.extractor.normalizer import normalize_all
+    specs, norm_notes = normalize_all(specs)
+    if norm_notes:
+        console.print(
+            f"[cyan]spec normalizer: rewrote {len(norm_notes)} parameter(s)[/cyan]"
+        )
     arch = CrateArchitecture.model_validate(
         json.loads(arch_path.read_text(encoding="utf-8"))
     )
