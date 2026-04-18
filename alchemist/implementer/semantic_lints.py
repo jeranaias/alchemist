@@ -136,7 +136,11 @@ def lint_adler32(source: str, alg: AlgorithmSpec) -> list[SemanticFinding]:
             message="Adler-32 must use BASE = 65521 (largest prime < 2^16)",
         ))
     # If we find BASE = <other number>, that's a stronger signal.
-    for m in re.finditer(r"\b(?:BASE|base|ADLER_BASE)\s*[:=]\s*(\d+)", source):
+    # Match both `const BASE: u32 = 255` and `let base = 255` forms.
+    for m in re.finditer(
+        r"\b(?:BASE|base|ADLER_BASE|ADLER32_BASE)\b\s*(?::\s*[\w:]+\s*)?=\s*(\d+)",
+        source,
+    ):
         if m.group(1) != "65521":
             findings.append(SemanticFinding(
                 rule="adler32_wrong_base",

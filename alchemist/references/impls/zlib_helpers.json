@@ -1,0 +1,42 @@
+[
+  {
+    "algorithm": "zmemcpy",
+    "variant": "default",
+    "title": "zlib zmemcpy — byte slice copy",
+    "standards": ["zlib internal"],
+    "signature": "pub fn zmemcpy(dst: &mut [u8], src: &[u8], n: usize)",
+    "license": "Apache-2.0",
+    "notes": "Copy n bytes from src to dst. In Rust, use copy_from_slice on bounded sub-slices.",
+    "rust_source": "pub fn zmemcpy(dst: &mut [u8], src: &[u8], n: usize) {\n    let len = n.min(dst.len()).min(src.len());\n    dst[..len].copy_from_slice(&src[..len]);\n}"
+  },
+  {
+    "algorithm": "zmemcmp",
+    "variant": "default",
+    "title": "zlib zmemcmp — byte slice compare",
+    "standards": ["zlib internal"],
+    "signature": "pub fn zmemcmp(s1: &[u8], s2: &[u8], n: usize) -> i32",
+    "license": "Apache-2.0",
+    "notes": "Compare n bytes. Returns 0 if equal, negative if s1 < s2, positive if s1 > s2.",
+    "rust_source": "pub fn zmemcmp(s1: &[u8], s2: &[u8], n: usize) -> i32 {\n    let len = n.min(s1.len()).min(s2.len());\n    for i in 0..len {\n        if s1[i] != s2[i] {\n            return (s1[i] as i32) - (s2[i] as i32);\n        }\n    }\n    0\n}"
+  },
+  {
+    "algorithm": "zmemzero",
+    "variant": "default",
+    "title": "zlib zmemzero — zero-fill",
+    "standards": ["zlib internal"],
+    "signature": "pub fn zmemzero(buffer: &mut [u8], len: usize)",
+    "license": "Apache-2.0",
+    "notes": "Zero the first n bytes of a buffer.",
+    "rust_source": "pub fn zmemzero(buffer: &mut [u8], len: usize) {\n    let n = len.min(buffer.len());\n    for b in &mut buffer[..n] { *b = 0; }\n}"
+  },
+  {
+    "algorithm": "bi_reverse",
+    "variant": "default",
+    "title": "Reverse the bits of a code value",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn bi_reverse(code: u32, len: u8) -> u32",
+    "license": "Apache-2.0",
+    "notes": "Reverse the bottom `len` bits of `code`. Used when emitting Huffman codes in DEFLATE.",
+    "rust_source": "pub fn bi_reverse(mut code: u32, len: u8) -> u32 {\n    let mut res: u32 = 0;\n    for _ in 0..len {\n        res = (res << 1) | (code & 1);\n        code >>= 1;\n    }\n    res\n}"
+  }
+]

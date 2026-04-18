@@ -1,0 +1,10 @@
+{
+  "algorithm": "x2nmodp",
+  "variant": "default",
+  "title": "x^(2^n) mod CRC-32 polynomial (for CRC combine)",
+  "standards": ["CRC-32 combine"],
+  "signature": "pub fn x2nmodp(n: u64, k: u32) -> u32",
+  "license": "Apache-2.0",
+  "notes": "Computes x^(2^n) mod the CRC-32 polynomial. Used by crc32_combine to advance the CRC state by 2^n zero bits. Implements repeated squaring: start with p = x^(2^k), then square n times via the multmodp helper.",
+  "rust_source": "pub fn x2nmodp(mut n: u64, k: u32) -> u32 {\n    let mut p: u32 = 0x8000_0000u32 >> k;  // x^(2^k) in reflected form\n    while n > 0 {\n        if n & 1 != 0 {\n            p = multmodp(p, p);\n        }\n        n >>= 1;\n    }\n    p\n}"
+}

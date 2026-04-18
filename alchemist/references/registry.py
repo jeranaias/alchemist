@@ -125,6 +125,15 @@ def _canonical(name: str) -> str | None:
     for alias, canonical in _ALIAS_MAP.items():
         if alias.replace("_", "") == n2:
             return canonical
+    # Fallback: if the name matches a disk-loaded reference key directly,
+    # accept it as canonical. This lets new ref JSON files work without
+    # updating the alias map every time.
+    loaded = _load_all_references()
+    if n in loaded:
+        return n
+    for key in loaded:
+        if key.lower().replace("_", "") == n2:
+            return key
     return None
 
 
