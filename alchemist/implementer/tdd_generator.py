@@ -444,19 +444,27 @@ class TDDGenerator:
             ok_test, tout, terr = _run_cargo_test_filter(
                 crate_dir, test_name_prefix,
             )
-            if ok_test:
+            combined = tout + "\n" + terr
+            # Cargo returns exit 0 even when ZERO tests matched the filter.
+            # Detect that case explicitly: if the output shows "0 passed; 0
+            # failed" WITHOUT any "running N tests" line reporting N>0, then
+            # no tests ran. Per P2 (no compile-only pass) we must fail here
+            # rather than claim success.
+            import re as _re
+            ran_counts = [int(m) for m in _re.findall(
+                r"running\s+(\d+)\s+tests?", combined
+            )]
+            had_real_tests = any(n > 0 for n in ran_counts)
+            if ok_test and had_real_tests:
                 attempt.tests_passed = True
                 console.print(f"  [green]{alg.name}: tests pass on iter {iteration}[/green]")
                 return attempt
 
-            # If no matching tests exist, this is NOT a pass. Per P2 (no
-            # compile-only passes), every function must have a real
-            # correctness test. Mark as failed and continue iterating;
-            # the fuzz-vector pipeline (Phase 2) will fill the gap. Until
-            # then, "no vectors" means the function cannot be verified
-            # and must not be claimed as passing.
-            combined = tout + "\n" + terr
-            if f"0 passed" in combined and f"0 failed" in combined:
+            # No tests matched this function's prefix — P2 violation to
+            # accept. Mark as failed so the user sees which functions are
+            # unverifiable. Fuzz-vector backfill already ran; if it produced
+            # nothing, the only path forward is to extend fuzz bindings.
+            if ok_test and not had_real_tests:
                 attempt.last_error = (
                     "no correctness test available for this function; "
                     "compile-only acceptance is forbidden by the "
@@ -466,9 +474,7 @@ class TDDGenerator:
                     "## No tests run — compile-only acceptance is forbidden\n\n"
                     "This function needs a test vector but none exists in the "
                     "spec or standards catalog. The pipeline will not accept "
-                    "an implementation that cannot be verified. Ensure the "
-                    "spec extracts test vectors, or wait for the fuzz-vector "
-                    "pipeline to generate them."
+                    "an implementation that cannot be verified."
                 )
                 console.print(
                     f"  [red]{alg.name}: no test vectors — cannot verify correctness[/red]"
