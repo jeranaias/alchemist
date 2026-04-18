@@ -329,6 +329,57 @@ def emit_error_enum(err: ErrorType) -> str:
 
 # ---------- Trait definitions ----------
 
+def emit_state_wrapper(w) -> str:
+    """Emit a public wrapper struct that encapsulates a raw internal state.
+
+    The wrapper has a single `inner: InnerState` field, kept private.
+    Callers interact exclusively through the methods defined on the wrapper.
+    """
+    lines = []
+    if getattr(w, "description", ""):
+        for l in _wrap_for_doc(w.description):
+            lines.append(f"/// {l}")
+    lines.append(f"pub struct {w.public_name} {{")
+    lines.append(f"    pub(crate) inner: {w.inner_state},")
+    lines.append("}")
+    lines.append("")
+    if w.methods:
+        lines.append(f"impl {w.public_name} {{")
+        for m_sig in w.methods:
+            sig = m_sig.rstrip(";").rstrip()
+            lines.append(f"    {sig} {{")
+            lines.append(f'        unimplemented!("{w.public_name} method skeleton")')
+            lines.append("    }")
+        lines.append("}")
+    return "\n".join(lines)
+
+
+def emit_builder(b) -> str:
+    """Emit a builder struct with fluent setter methods plus build()."""
+    lines = []
+    lines.append(f"/// Builder for {b.built_type}.")
+    lines.append(f"#[derive(Default)]")
+    lines.append(f"pub struct {b.builder_name} {{")
+    lines.append(f"    // fields populated by fluent setters")
+    lines.append("}")
+    lines.append("")
+    lines.append(f"impl {b.builder_name} {{")
+    lines.append("    pub fn new() -> Self {")
+    lines.append("        Self::default()")
+    lines.append("    }")
+    for p_sig in b.parameters:
+        sig = p_sig.rstrip(";").rstrip()
+        lines.append(f"    {sig} {{")
+        lines.append("        unimplemented!(\"builder setter skeleton\")")
+        lines.append("    }")
+    build_sig = b.build_signature.rstrip(";").rstrip()
+    lines.append(f"    {build_sig} {{")
+    lines.append("        unimplemented!(\"builder build skeleton\")")
+    lines.append("    }")
+    lines.append("}")
+    return "\n".join(lines)
+
+
 def emit_trait(tr: TraitSpec) -> str:
     lines = []
     if tr.description:
@@ -432,6 +483,8 @@ def _lib_rs_for(
     no_std: bool,
     dep_crate_names: list[str] | None = None,
     all_error_types: list[ErrorType] | None = None,
+    state_wrappers: list | None = None,
+    builders: list | None = None,
 ) -> str:
     lines: list[str] = []
     # Structural no-unsafe proof: every Alchemist-generated crate forbids
@@ -479,6 +532,16 @@ def _lib_rs_for(
     for t in traits:
         lines.append(emit_trait(t))
         lines.append("")
+    # State wrappers: encapsulate raw internal state types
+    for w in (state_wrappers or []):
+        if w.crate == crate.name:
+            lines.append(emit_state_wrapper(w))
+            lines.append("")
+    # Builders: fluent wrappers for parameterized init
+    for b in (builders or []):
+        if b.crate == crate.name:
+            lines.append(emit_builder(b))
+            lines.append("")
     # Error enums
     for e in errors:
         lines.append(emit_error_enum(e))
@@ -526,6 +589,8 @@ def generate_crate_skeleton(
             crate_spec, module_names, errors, traits, crate_spec.is_no_std,
             dep_crate_names=list(crate_spec.dependencies),
             all_error_types=list(architecture.error_types),
+            state_wrappers=list(getattr(architecture, "state_wrappers", []) or []),
+            builders=list(getattr(architecture, "builders", []) or []),
         ),
         encoding="utf-8",
     )
