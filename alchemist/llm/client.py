@@ -10,8 +10,10 @@ instead of tool_use (which is Claude-specific).
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +21,14 @@ from typing import Any
 import httpx
 
 from alchemist.config import AlchemistConfig
+
+
+# Global concurrency cap across ALL AlchemistLLM instances. 122B decode is
+# latency-heavy; more than a couple of in-flight requests on a single GPU
+# queues at the server and eventually hits 503 when the buffer fills.
+# Override with ALCHEMIST_MAX_INFLIGHT=N for beefier backends.
+_MAX_INFLIGHT = int(os.environ.get("ALCHEMIST_MAX_INFLIGHT", "2"))
+_INFLIGHT_SEM = threading.Semaphore(_MAX_INFLIGHT)
 
 
 # vLLM server details
@@ -109,14 +119,18 @@ class AlchemistLLM:
         Returns (response, error_msg). If error_msg is non-empty, all
         attempts failed. Retryable: 503, 502, 429, ReadTimeout, ConnectError.
         Non-retryable: 400 (malformed payload), 401, 404.
+
+        Every call acquires a process-wide semaphore so multi-sample
+        fan-out can't flood the server.
         """
         last_err = ""
         for attempt in range(1, attempts + 1):
             try:
-                resp = self._client.post(
-                    f"{self._endpoint}/chat/completions",
-                    json=payload,
-                )
+                with _INFLIGHT_SEM:
+                    resp = self._client.post(
+                        f"{self._endpoint}/chat/completions",
+                        json=payload,
+                    )
                 if resp.status_code in (200, 201):
                     return resp, ""
                 # Retryable server errors
