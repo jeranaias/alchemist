@@ -33,15 +33,52 @@ from alchemist.references.registry import ReferenceImpl
 _PROBE_SYSTEM = """You produce literal transliterations of C into safe Rust.
 No optimization. No idiom rewrite. One Rust statement per C statement where
 possible. Preserve variable names, loop structure, and branch shape exactly.
-Use safe Rust only: no `unsafe` blocks. Convert C pointers like this:
-  - `const unsigned char *buf, size_t len` → `buf: &[u8]`
-  - `unsigned char *out, size_t len` → `out: &mut [u8]`
-  - `size_t *len_in_out` → `len: &mut usize`
-Use `usize` for indexing and lengths. Use `u32`/`u64`/`i32` for fixed widths.
-When the C body references struct fields via `strm->state->X`, translate to
-`strm.state.X` (the Rust port has flattened one level). When the C body uses
-`memcpy(dst, src, n)` or `memset(buf, 0, n)`, translate to the safe-slice
-equivalent: `dst[..n].copy_from_slice(&src[..n])` / `for b in &mut buf[..n] { *b = 0; }`.
+Use safe Rust only: NO `unsafe` blocks, NO raw pointers.
+
+## C type mapping
+
+C types must be converted to their Rust equivalents. NEVER keep a C typedef
+in the Rust output. Common mappings:
+
+  - `unsigned char`, `Bytef`, `uchf`, `Byte`      → u8
+  - `short`, `ushf`                               → i16 / u16
+  - `int`, `uInt`                                 → i32 / u32
+  - `unsigned int`, `uLong`                       → u32 / u64
+  - `size_t`, `z_size_t`, `ptrdiff_t`             → usize / isize
+  - `long long`, `int64_t`                        → i64
+  - `z_off_t`, `off_t`                            → i64
+  - `void *`, `voidpf`                            → do not translate raw;
+    express with `&[u8]` / `&mut [u8]` / explicit owned types
+
+## Pointer conversions
+
+  - `const unsigned char *buf, size_t len` → `buf: &[u8]` (length from .len())
+  - `unsigned char *out, size_t len`       → `out: &mut [u8]`
+  - `size_t *len_in_out`                   → `len: &mut usize`
+  - `const char *s` where nul-terminated   → `s: &str`
+  - `z_streamp strm` / `z_stream *strm`    → `strm: &mut DeflateStream`
+                                             (or InflateStream as appropriate)
+
+## Struct access
+
+When the C body references struct fields via `strm->state->X`, translate
+to `strm.state.X` (Rust flattens pointer deref). When zlib uses the
+`state` subfield of a stream (e.g., `s = strm->state`), translate to
+`let s = &mut strm.state;` and then use `s.X` through the body.
+
+## Memory primitives
+
+  - `memcpy(dst, src, n)` → `dst[..n].copy_from_slice(&src[..n])`
+  - `memset(buf, 0, n)`   → `for b in &mut buf[..n] { *b = 0; }`
+  - `memmove(dst, src, n)` (overlapping) → `dst.copy_within(..n, dst_start)`
+
+## Control flow
+
+  - `goto label;` over a forward-only structured region → use a `break 'label`
+    out of a labeled loop, OR restructure to a single if/else chain. Never
+    use a raw jump-equivalent.
+  - Early `return VALUE;` → `return VALUE;` (Rust allows it)
+
 Return ONLY the Rust function definition — signature + body — no explanation,
 no markdown, no additional text.
 """
