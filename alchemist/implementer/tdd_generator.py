@@ -1077,7 +1077,7 @@ class TDDGenerator:
             return
         try:
             from alchemist.extractor.fuzz_vectors import (
-                load_zlib_dll, ZLIB_BINDINGS, fuzz_for_spec,
+                load_zlib_dll, ZLIB_BINDINGS, ZLIB_PURE_REFERENCES, fuzz_for_spec,
             )
             dll = load_zlib_dll(dll_path)
         except Exception as e:  # noqa: BLE001
@@ -1090,7 +1090,10 @@ class TDDGenerator:
                     continue
                 if lookup_test_vectors(alg.name):
                     continue
-                vectors = fuzz_for_spec(dll, alg, ZLIB_BINDINGS)
+                vectors = fuzz_for_spec(
+                    dll, alg, ZLIB_BINDINGS,
+                    pure_references=ZLIB_PURE_REFERENCES,
+                )
                 if vectors:
                     alg.test_vectors = vectors
                     added += len(vectors)

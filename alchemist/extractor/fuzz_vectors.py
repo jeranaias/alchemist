@@ -172,6 +172,40 @@ def fuzz_hash_vectors(
     return vectors
 
 
+def fuzz_pure_reference(
+    alg: AlgorithmSpec,
+    reference,
+    *,
+    count: int = 20,
+    seed: int = _FUZZ_SEED,
+) -> list[SpecTestVector]:
+    """Generate vectors via a pure-Python reference implementation.
+
+    For functions the C DLL doesn't export (static/inline helpers),
+    define the reference as a Python callable `fn(input_bytes) -> int`
+    that faithfully mirrors the C semantics. This still grounds the
+    test in a canonical source — just not the DLL.
+    """
+    rng = _rng(seed)
+    inputs = _gen_byte_inputs(rng, count)
+    vectors: list[SpecTestVector] = []
+    primary = _primary_input_name(alg)
+    for data in inputs:
+        output = reference(data)
+        if isinstance(output, (bytes, bytearray)):
+            expected = _bytes_to_rust_literal(bytes(output))
+        else:
+            expected = f"0x{int(output):08x}"
+        vectors.append(SpecTestVector(
+            description=f"fuzz_input_len_{len(data)}",
+            source=f"pure Python reference: {alg.name}",
+            inputs={primary: _bytes_to_rust_literal(bytes(data))},
+            expected_output=expected,
+            tolerance="exact",
+        ))
+    return vectors
+
+
 def fuzz_for_spec(
     dll: ctypes.CDLL,
     alg: AlgorithmSpec,
@@ -179,8 +213,17 @@ def fuzz_for_spec(
     *,
     count: int = 20,
     seed: int = _FUZZ_SEED,
+    pure_references: dict[str, callable] | None = None,
 ) -> list[SpecTestVector]:
-    """Dispatch based on algorithm category. Returns [] if unsupported."""
+    """Dispatch based on algorithm category. Returns [] if unsupported.
+
+    Prefers C-DLL bindings when available; falls back to pure-Python
+    references for functions not exported by the DLL.
+    """
+    if pure_references and alg.name in pure_references:
+        return fuzz_pure_reference(
+            alg, pure_references[alg.name], count=count, seed=seed,
+        )
     binding = bindings.get(alg.name)
     if binding is None:
         return []
@@ -262,6 +305,73 @@ ZLIB_BINDINGS: dict[str, CFunctionBinding] = {
         argtypes=(ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong),
         adapter=_crc32_combine_op_adapter,
     ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Pure-Python references for functions zlib keeps static/local in its C
+# source (not exported from zlib1.dll). These reference impls must
+# faithfully mirror the C semantics — they ARE the correctness oracle
+# for these functions.
+# ---------------------------------------------------------------------------
+
+def _byte_swap_pure_ref(data: bytes) -> int:
+    """byte_swap reverses byte order of a 64-bit integer.
+
+    The C body: s[7] | s[6]<<8 | s[5]<<16 | ... | s[0]<<56 for little-endian
+    input interpreted as big-endian, or equivalently u64::swap_bytes.
+    """
+    padded = bytes(data[:8].ljust(8, b"\x00"))
+    word = int.from_bytes(padded, "little")
+    return int.from_bytes(word.to_bytes(8, "little"), "big")
+
+
+def _bi_reverse_pure_ref(data: bytes) -> int:
+    """bi_reverse reverses the low `len` bits of `code`.
+
+    Test input: first 4 bytes are code (u32), 5th byte is len.
+    """
+    padded = bytes(data[:5].ljust(5, b"\x00"))
+    code = int.from_bytes(padded[0:4], "little") & 0xFFFFFFFF
+    length = padded[4] & 0x1F  # clamp to [0, 31]
+    res = 0
+    for _ in range(length):
+        res = ((res << 1) | (code & 1)) & 0xFFFFFFFF
+        code >>= 1
+    return res
+
+
+def _multmodp_pure_ref(data: bytes) -> int:
+    """multmodp(a, b) in GF(2^32) with the zlib CRC polynomial.
+
+    Mirrors the C implementation: multiply-and-reduce using the reflected
+    CRC-32 polynomial x^32 = x^26 + x^23 + x^22 + x^16 + x^12 + x^11 +
+    x^10 + x^8 + x^7 + x^5 + x^4 + x^2 + x + 1 (0xEDB88320 reflected).
+    """
+    padded = bytes(data[:8].ljust(8, b"\x00"))
+    a = int.from_bytes(padded[0:4], "little")
+    b = int.from_bytes(padded[4:8], "little")
+    # multmodp per zlib's crc32.c: p = 0; for each bit of b, p ^= a shifted appropriately
+    p = 0
+    POLY = 0xEDB88320
+    for i in range(32):
+        if b & 0x80000000:
+            p ^= a
+        b = (b << 1) & 0xFFFFFFFF
+        # Multiply a by x modulo the CRC polynomial
+        if a & 1:
+            a = (a >> 1) ^ POLY
+        else:
+            a >>= 1
+    return p
+
+
+ZLIB_PURE_REFERENCES: dict[str, callable] = {
+    "byte_swap": _byte_swap_pure_ref,
+    "bi_reverse": _bi_reverse_pure_ref,
+    # multmodp disabled until we verify the reference matches C exactly —
+    # the reflection direction is tricky to get right.
+    # "multmodp": _multmodp_pure_ref,
 }
 
 
