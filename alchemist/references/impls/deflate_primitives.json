@@ -30,6 +30,26 @@
     "rust_source": "pub fn bi_flush(state: &mut DeflateState) {\n    if state.bi_valid == 16 {\n        state.pending.push((state.bi_buf & 0xff) as u8);\n        state.pending.push((state.bi_buf >> 8) as u8);\n        state.bi_buf = 0;\n        state.bi_valid = 0;\n    } else if state.bi_valid >= 8 {\n        state.pending.push((state.bi_buf & 0xff) as u8);\n        state.bi_buf >>= 8;\n        state.bi_valid -= 8;\n    }\n}"
   },
   {
+    "algorithm": "slide_hash",
+    "variant": "default",
+    "title": "Slide hash tables when window shifts",
+    "standards": ["DEFLATE"],
+    "signature": "pub fn slide_hash(state: &mut DeflateState)",
+    "license": "Apache-2.0",
+    "notes": "When the sliding window shifts down by wsize, every hash-chain head pointer pointing into the old window must be decremented by wsize (or zeroed if it falls below). DeflateState must expose head: Vec<u16>, prev: Vec<u16>, and wsize: u32.",
+    "rust_source": "pub fn slide_hash(state: &mut DeflateState) {\n    let wsize = state.wsize as u16;\n    for h in state.head.iter_mut() {\n        *h = if *h >= wsize { *h - wsize } else { 0 };\n    }\n    for p in state.prev.iter_mut() {\n        *p = if *p >= wsize { *p - wsize } else { 0 };\n    }\n}"
+  },
+  {
+    "algorithm": "read_buf",
+    "variant": "default",
+    "title": "Read next bytes from the deflate input stream",
+    "standards": ["DEFLATE"],
+    "signature": "pub fn read_buf(strm: &mut DeflateStream, buf: &mut [u8], size: usize) -> usize",
+    "license": "Apache-2.0",
+    "notes": "Copy up to min(size, strm.avail_in, buf.len()) bytes from strm.next_in into buf, advance next_in/avail_in/total_in. DeflateStream fields: next_in: Vec<u8>, avail_in: usize, total_in: u64.",
+    "rust_source": "pub fn read_buf(strm: &mut DeflateStream, buf: &mut [u8], size: usize) -> usize {\n    let n = size.min(strm.avail_in).min(buf.len());\n    if n == 0 { return 0; }\n    buf[..n].copy_from_slice(&strm.next_in[..n]);\n    strm.next_in.drain(..n);\n    strm.avail_in -= n;\n    strm.total_in = strm.total_in.saturating_add(n as u64);\n    n\n}"
+  },
+  {
     "algorithm": "gen_codes",
     "variant": "default",
     "title": "Assign canonical Huffman codes given bit lengths",

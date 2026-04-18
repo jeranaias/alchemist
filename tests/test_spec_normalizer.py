@@ -133,6 +133,45 @@ def test_normalize_module_rewrites_each_algorithm():
     assert len(notes) >= 2
 
 
+def test_type_alias_z_stream_rewritten():
+    a = _alg("read_buf", [
+        Parameter(name="strm", rust_type="&mut z_stream", description="",
+                  direction=ParamDirection.inout),
+    ])
+    new, notes = normalize_spec(a)
+    assert new.inputs[0].rust_type == "&mut DeflateStream"
+    assert any("alias" in n for n in notes)
+
+
+def test_type_alias_ulong_in_return():
+    a = _alg("foo", [
+        Parameter(name="x", rust_type="&[u8]", description="",
+                  direction=ParamDirection.input),
+    ], ret="uLong")
+    new, _ = normalize_spec(a)
+    assert new.return_type == "u64"
+
+
+def test_state_type_correction_compress_block():
+    a = _alg("compress_block", [
+        Parameter(name="state", rust_type="&mut InflateState", description="",
+                  direction=ParamDirection.inout),
+    ])
+    new, notes = normalize_spec(a)
+    assert new.inputs[0].rust_type == "&mut DeflateState"
+    assert any("state correction" in n for n in notes)
+
+
+def test_alias_preserved_when_no_other_rewrite():
+    """Parameter with alias fix but no Case 1-4 match still gets rewritten."""
+    a = _alg("foo", [
+        Parameter(name="strm", rust_type="&mut z_stream", description="",
+                  direction=ParamDirection.input),
+    ])
+    new, _ = normalize_spec(a)
+    assert new.inputs[0].rust_type == "&mut DeflateStream"
+
+
 def test_normalize_all_no_changes_when_clean():
     m = ModuleSpec(
         name="clean", display_name="", description="",

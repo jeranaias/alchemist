@@ -40,13 +40,53 @@ _LENGTH_PTR_NAME_RE = re.compile(
     r")$"
 )
 
+# Alias rewrites for known C-level type names the extractor leaks through.
+# Extractor sometimes keeps the C typedef (z_stream) or picks the wrong
+# state type (InflateState in a deflate-only function). Rewrite on sight.
+_TYPE_ALIAS: dict[str, str] = {
+    "z_stream": "DeflateStream",
+    "z_streamp": "&mut DeflateStream",
+    "Bytef": "u8",
+    "uchf": "u8",
+    "uInt": "u32",
+    "uLong": "u64",
+    "voidpf": "*mut u8",
+    "voidp": "*mut u8",
+    "ZlibStream": "DeflateStream",
+}
+
+# Functions whose state param is mis-typed. Maps (fn_name, param_name) →
+# correct type. Populated from observed bugs; additive only.
+_STATE_TYPE_CORRECTION: dict[tuple[str, str], str] = {
+    ("compress_block", "state"): "&mut DeflateState",
+    ("compress_block", "s"): "&mut DeflateState",
+}
+
+
+def _apply_type_aliases(rust_type: str) -> str:
+    """Replace known C-level type names with their Rust equivalents."""
+    out = rust_type
+    for alias, rust in _TYPE_ALIAS.items():
+        # Word-boundary replacement so `z_stream` matches but not `z_streamp_foo`.
+        out = re.sub(rf"\b{re.escape(alias)}\b", rust, out)
+    return out
+
 
 def normalize_spec(spec: AlgorithmSpec) -> tuple[AlgorithmSpec, list[str]]:
     """Rewrite a single algorithm spec's parameters. Returns (new, notes)."""
     notes: list[str] = []
     new_inputs: list[Parameter] = []
     for p in spec.inputs or []:
-        t = (p.rust_type or "").strip()
+        t_raw = (p.rust_type or "").strip()
+        # Apply type-alias rewrites first so subsequent rules see real Rust types.
+        t = _apply_type_aliases(t_raw)
+        if t != t_raw:
+            notes.append(f"{spec.name}::{p.name}: {t_raw} → {t} (alias)")
+        # Function-specific state-type corrections.
+        corrected = _STATE_TYPE_CORRECTION.get((spec.name, p.name))
+        if corrected and t != corrected:
+            notes.append(f"{spec.name}::{p.name}: {t} → {corrected} (state correction)")
+            t = corrected
         d = p.direction
 
         # Case 1: Vec<u8> with inout/output — should be &mut [u8].
@@ -86,20 +126,28 @@ def normalize_spec(spec: AlgorithmSpec) -> tuple[AlgorithmSpec, list[str]]:
         # u64 lengths (plain inputs) are left alone — they may be intentional.
         # Skipped to stay conservative.
 
-        new_inputs.append(p)
+        # Persist any alias/correction rewrites even if none of the above
+        # cases matched.
+        if t != t_raw:
+            new_inputs.append(p.model_copy(update={"rust_type": t}))
+        else:
+            new_inputs.append(p)
 
-    # Return type: Result<u64, _> where destLen was u64 → Result<usize, _>.
-    # Same reasoning: zlib-style APIs use size_t; u64 is a stale artifact.
-    ret = spec.return_type or ""
-    new_ret = ret
-    if re.search(r"\bResult\s*<\s*u64\b", ret):
+    # Return type: apply type aliases first (z_stream, uLong, etc.), then
+    # the Result<u64,_> heuristic.
+    orig_ret = spec.return_type or ""
+    new_ret = _apply_type_aliases(orig_ret)
+    if new_ret != orig_ret:
+        notes.append(f"{spec.name}: return {orig_ret} → {new_ret} (alias)")
+    if re.search(r"\bResult\s*<\s*u64\b", new_ret):
         # Only rewrite if the function has an inout length param we just normalized.
         if any(p.rust_type == "&mut usize" for p in new_inputs):
-            new_ret = re.sub(r"\bResult\s*<\s*u64\b", "Result<usize", ret)
-            notes.append(f"{spec.name}: return Result<u64,_> → Result<usize,_>")
+            prev = new_ret
+            new_ret = re.sub(r"\bResult\s*<\s*u64\b", "Result<usize", new_ret)
+            notes.append(f"{spec.name}: return {prev} → {new_ret}")
 
     updates: dict = {"inputs": new_inputs}
-    if new_ret != ret:
+    if new_ret != orig_ret:
         updates["return_type"] = new_ret
     if updates:
         return spec.model_copy(update=updates), notes
