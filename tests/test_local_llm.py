@@ -4,12 +4,31 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from alchemist.config import AlchemistConfig
 from alchemist.llm.client import AlchemistLLM
 from alchemist.extractor.schemas import AlgorithmSpec
 from alchemist.llm.structured import pydantic_to_tool_schema
+
+
+def _server_reachable() -> bool:
+    try:
+        resp = httpx.get(
+            f"{AlchemistConfig().local_endpoint}/models", timeout=5,
+        )
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _server_reachable(),
+    reason="Local LLM server unreachable",
+)
 
 
 def test_basic_chat():

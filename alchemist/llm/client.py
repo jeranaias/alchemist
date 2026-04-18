@@ -36,6 +36,11 @@ class LLMResponse:
     output_tokens: int = 0
     cost_usd: float = 0.0  # always 0 for local
     duration_ms: int = 0
+    error: str = ""  # non-empty iff the call failed (all retries exhausted)
+
+    @property
+    def ok(self) -> bool:
+        return not self.error and bool(self.content.strip())
 
 
 @dataclass
@@ -96,6 +101,45 @@ class AlchemistLLM:
             t.sleep(check_interval)
         return False
 
+    def _post_with_retry(
+        self, payload: dict, start: float, *, attempts: int = 5,
+    ) -> tuple[httpx.Response | None, str]:
+        """POST with exponential backoff on retryable errors.
+
+        Returns (response, error_msg). If error_msg is non-empty, all
+        attempts failed. Retryable: 503, 502, 429, ReadTimeout, ConnectError.
+        Non-retryable: 400 (malformed payload), 401, 404.
+        """
+        last_err = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = self._client.post(
+                    f"{self._endpoint}/chat/completions",
+                    json=payload,
+                )
+                if resp.status_code in (200, 201):
+                    return resp, ""
+                # Retryable server errors
+                if resp.status_code in (429, 502, 503, 504):
+                    last_err = f"HTTP {resp.status_code}"
+                    if attempt < attempts:
+                        backoff = min(2.0 ** attempt, 30.0)
+                        time.sleep(backoff)
+                        continue
+                # Non-retryable
+                last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                return None, last_err
+            except (httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                last_err = f"{type(e).__name__}: {e}"
+                if attempt < attempts:
+                    backoff = min(2.0 ** attempt, 30.0)
+                    time.sleep(backoff)
+                    continue
+            except httpx.HTTPError as e:
+                last_err = f"{type(e).__name__}: {e}"
+                return None, last_err
+        return None, last_err
+
     def call(
         self,
         messages: list[dict],
@@ -151,15 +195,11 @@ class AlchemistLLM:
             "temperature": temperature,
         }
 
-        try:
-            resp = self._client.post(
-                f"{self._endpoint}/chat/completions",
-                json=payload,
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
+        resp, err = self._post_with_retry(payload, start, attempts=5)
+        if err:
             return LLMResponse(
-                content=f"ERROR: {e}",
+                content="",
+                error=err,
                 model=self._model,
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
@@ -251,24 +291,15 @@ class AlchemistLLM:
             "temperature": temperature,
         }
 
-        try:
-            resp = self._client.post(
-                f"{self._endpoint}/chat/completions",
-                json=payload,
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
+        resp, err = self._post_with_retry(payload, start, attempts=5)
+        if err:
             # Retry without guided_json if server doesn't support it
             payload.pop("extra_body", None)
-            try:
-                resp = self._client.post(
-                    f"{self._endpoint}/chat/completions",
-                    json=payload,
-                )
-                resp.raise_for_status()
-            except httpx.HTTPError as e2:
+            resp, err = self._post_with_retry(payload, start, attempts=5)
+            if err:
                 return LLMResponse(
-                    content=f"ERROR: {e2}",
+                    content="",
+                    error=err,
                     model=self._model,
                     duration_ms=int((time.monotonic() - start) * 1000),
                 )

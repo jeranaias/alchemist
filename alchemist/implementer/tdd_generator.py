@@ -480,6 +480,11 @@ class TDDGenerator:
             max_tokens=6000,
             temperature=temperature,
         )
+        # Hard gate: if the LLM call failed (503, timeout, etc.), return None
+        # so the caller SKIPS splicing. Without this, the error text was being
+        # spliced as code, producing uncompilable Rust with ERROR: strings.
+        if getattr(resp, "error", ""):
+            return None
         if resp.structured and "content" in resp.structured:
             return (resp.structured.get("content") or "").strip() or None
         # Fallback: raw text
