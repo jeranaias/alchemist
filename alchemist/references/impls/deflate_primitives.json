@@ -1,0 +1,42 @@
+[
+  {
+    "algorithm": "send_bits",
+    "variant": "default",
+    "title": "Write a variable-length bit value to the DEFLATE bit buffer",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn send_bits(state: &mut DeflateState, value: u16, length: u8)",
+    "license": "Apache-2.0",
+    "notes": "Appends `length` bits of `value` to state.bi_buf (16-bit buffer). When the buffer fills, flushes two bytes into state.pending in LSB-first order (RFC 1951 §3.1.1). Requires DeflateState fields: bi_buf: u16, bi_valid: u8, pending: Vec<u8>.",
+    "rust_source": "pub fn send_bits(state: &mut DeflateState, value: u16, length: u8) {\n    let len = length as u32;\n    let val = value as u32;\n    let valid = state.bi_valid as u32;\n    // If the new bits fit, just shift in.\n    if valid + len > 16 {\n        // Flush the low byte, then the high byte of bi_buf before appending.\n        state.bi_buf |= (val << valid) as u16;\n        state.pending.push((state.bi_buf & 0xff) as u8);\n        state.pending.push((state.bi_buf >> 8) as u8);\n        // Put the remaining bits of value into the freshly cleared buffer.\n        state.bi_buf = (val >> (16 - valid)) as u16;\n        state.bi_valid = ((valid + len) - 16) as u8;\n    } else {\n        state.bi_buf |= (val << valid) as u16;\n        state.bi_valid = (valid + len) as u8;\n    }\n}"
+  },
+  {
+    "algorithm": "bi_windup",
+    "variant": "default",
+    "title": "Flush the remaining bits in the DEFLATE bit buffer, padding with zeros",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn bi_windup(state: &mut DeflateState)",
+    "license": "Apache-2.0",
+    "notes": "Flushes state.bi_buf to state.pending, writing 1 or 2 bytes as needed based on state.bi_valid. Resets bi_buf and bi_valid to zero.",
+    "rust_source": "pub fn bi_windup(state: &mut DeflateState) {\n    if state.bi_valid > 8 {\n        state.pending.push((state.bi_buf & 0xff) as u8);\n        state.pending.push((state.bi_buf >> 8) as u8);\n    } else if state.bi_valid > 0 {\n        state.pending.push((state.bi_buf & 0xff) as u8);\n    }\n    state.bi_buf = 0;\n    state.bi_valid = 0;\n}"
+  },
+  {
+    "algorithm": "bi_flush",
+    "variant": "default",
+    "title": "Flush complete bytes from the DEFLATE bit buffer to pending output",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn bi_flush(state: &mut DeflateState)",
+    "license": "Apache-2.0",
+    "notes": "If the bit buffer contains 16+ bits, emit 2 bytes and clear it. If 8+ bits, emit 1 byte and shift. Otherwise do nothing. Called periodically during encoding to keep bi_buf from overflowing.",
+    "rust_source": "pub fn bi_flush(state: &mut DeflateState) {\n    if state.bi_valid == 16 {\n        state.pending.push((state.bi_buf & 0xff) as u8);\n        state.pending.push((state.bi_buf >> 8) as u8);\n        state.bi_buf = 0;\n        state.bi_valid = 0;\n    } else if state.bi_valid >= 8 {\n        state.pending.push((state.bi_buf & 0xff) as u8);\n        state.bi_buf >>= 8;\n        state.bi_valid -= 8;\n    }\n}"
+  },
+  {
+    "algorithm": "gen_codes",
+    "variant": "default",
+    "title": "Assign canonical Huffman codes given bit lengths",
+    "standards": ["DEFLATE", "RFC 1951"],
+    "signature": "pub fn gen_codes(tree: &mut [HuffmanNode], max_code: usize, bl_count: &[u16])",
+    "license": "Apache-2.0",
+    "notes": "Canonical Huffman code assignment per RFC 1951 §3.2.2. For each symbol, sets tree[i].code to the reflected (LSB-first) canonical code whose bit length is tree[i].len. Uses bl_count[len] = number of codes of that length to derive next_code[len]. Symbols with len==0 are skipped.",
+    "rust_source": "pub fn gen_codes(tree: &mut [HuffmanNode], max_code: usize, bl_count: &[u16]) {\n    let max_bits = bl_count.len() - 1;\n    let mut next_code = [0u16; 16];\n    let mut code: u16 = 0;\n    for bits in 1..=max_bits {\n        code = (code + bl_count[bits - 1]) << 1;\n        if bits < next_code.len() {\n            next_code[bits] = code;\n        }\n    }\n    for n in 0..=max_code {\n        let len = tree[n].len as usize;\n        if len == 0 { continue; }\n        let c = next_code[len];\n        next_code[len] = c + 1;\n        // Reflected (LSB-first) code per RFC 1951.\n        let mut res: u16 = 0;\n        let mut code = c;\n        for _ in 0..len {\n            res = (res << 1) | (code & 1);\n            code >>= 1;\n        }\n        tree[n].code = res;\n    }\n}"
+  }
+]
