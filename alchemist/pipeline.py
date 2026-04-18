@@ -277,7 +277,7 @@ def run_implement_stage(
     if tdd:
         from alchemist.implementer.tdd_generator import TDDGenerator
         gen = TDDGenerator(config=config)
-        result = gen.generate_workspace(specs, arch, output)
+        result = gen.generate_workspace(specs, arch, output, source_root=source)
         ok = bool(result.ok)
         summary = (
             f"TDD: {sum(1 for a in result.attempts if a.tests_passed)}/"

@@ -192,9 +192,16 @@ class TDDGenerator:
         specs: list[ModuleSpec],
         architecture: CrateArchitecture,
         output_dir: Path,
+        *,
+        source_root: Path | None = None,
     ) -> TDDResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         result = TDDResult(workspace_dir=output_dir)
+        # Remember the source root so the reference probe can locate
+        # C function bodies for transliteration. Probe silently skips
+        # if source_root is None.
+        self._source_root = source_root
+        self._probe_refs: dict = {}
 
         # Phase A: skeleton
         console.print("[bold cyan]TDD Phase A: skeleton generation[/bold cyan]")
@@ -233,6 +240,12 @@ class TDDGenerator:
             system_text=_SYSTEM_PROMPT,
             project_context=self._build_project_context(specs, architecture),
         )
+        # Pre-probe: for every function without a hand-curated reference, try
+        # to synthesize one by asking the LLM to transliterate the C source
+        # directly. This covers the long tail of functions without curated
+        # refs, and is the generalization primitive that makes unseen-codebase
+        # support feasible.
+        self._probe_references(specs)
         for crate_name in _topo_sort(architecture):
             crate_spec = next((c for c in architecture.crates if c.name == crate_name), None)
             if not crate_spec:
@@ -755,6 +768,12 @@ class TDDGenerator:
         from alchemist.references.registry import references_for_standards
 
         candidates = []
+        # Ephemeral probe refs take priority — they were synthesized for
+        # THIS specific function from THIS specific C source, so they're
+        # more precise than any category-level curated match.
+        probe_ref = getattr(self, "_probe_refs", {}).get(alg.name)
+        if probe_ref is not None:
+            candidates.append(probe_ref)
         # Try direct name match (alias-tolerant)
         direct = find_references(alg.name)
         if direct.ok:
@@ -981,6 +1000,51 @@ class TDDGenerator:
                         f"  [red]{miss.c_function}: fill failed, stub "
                         f"removed from output (P1: no placeholder bodies)[/red]"
                     )
+
+    def _probe_references(self, specs: list[ModuleSpec]) -> None:
+        """Synthesize reference impls by transliterating the C source.
+
+        For each algorithm spec that (a) has no hand-curated reference impl
+        AND (b) has a locatable C source body, ask the LLM to produce a
+        direct, literal Rust transliteration. Successful transliterations
+        go into self._probe_refs keyed by algorithm name, picked up later
+        by _reference_prompt_block.
+
+        This is the Phase 1/2 generalization primitive: curated refs cover
+        common primitives; the probe covers everything else.
+        """
+        from alchemist.implementer.reference_probe import (
+            probe_algorithm, probe_result_as_reference,
+        )
+        from alchemist.references.registry import find_references
+        # Initialize ephemeral reference storage on the instance.
+        if not hasattr(self, "_probe_refs"):
+            self._probe_refs = {}
+        source_root = self._source_root
+        if source_root is None:
+            console.print("  [dim]reference probe skipped: no source root[/dim]")
+            return
+        probed = 0
+        for mod in specs:
+            for alg in mod.algorithms:
+                # Skip if curated ref exists.
+                if find_references(alg.name).ok:
+                    continue
+                sig = self._signature_for(alg)
+                probe = probe_algorithm(
+                    alg,
+                    source_root=source_root,
+                    llm=self.llm,
+                    signature=sig,
+                    struct_context=self._struct_context_for(alg),
+                    cached_context=self._cached_ctx,
+                )
+                ref = probe_result_as_reference(probe, sig)
+                if ref is not None:
+                    self._probe_refs[alg.name] = ref
+                    probed += 1
+        if probed:
+            console.print(f"  [cyan]reference probe: synthesized {probed} C→Rust refs[/cyan]")
 
     def _backfill_fuzz_vectors(self, specs: list[ModuleSpec]) -> None:
         """For every algorithm with no test_vectors, try fuzz generation.

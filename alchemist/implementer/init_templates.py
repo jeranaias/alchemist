@@ -19,18 +19,28 @@ import re
 from alchemist.extractor.schemas import AlgorithmSpec
 
 
-# Functions that should use deterministic templates instead of LLM.
-_INIT_FUNCTION_PATTERNS = [
-    r"^\w*[Ii]nit\d*_?$",
-    r"^\w*[Rr]eset\w*$",
-    r"^_tr_init$",
-    r"^tr_static_init$",
-    r"^init_block$",
+# Only truly empty/reset functions get the blanket-default template.
+# Init functions that take real parameters (e.g., deflateInit2_ with level,
+# windowBits, memLevel, strategy) set specific fields and CANNOT be served
+# by `*state = Default::default()` — those now go through the reference
+# probe instead. Narrowing this list is a P1 compliance fix.
+_RESET_ONLY_PATTERNS = [
+    r"^\w*[Rr]eset\d*$",        # inflateReset, deflateReset, inflateReset2
+    r"^\w*[Rr]esetKeep$",       # inflateResetKeep
+    r"^_tr_init$",              # zlib: local; zeroes internal counts
+    r"^tr_static_init$",        # zlib: no-op after static init table cached
+    r"^init_block$",            # zlib: zeros a handful of counts
 ]
 
 
 def is_init_function(name: str) -> bool:
-    for pat in _INIT_FUNCTION_PATTERNS:
+    """True iff a deterministic reset-to-default template is applicable.
+
+    Returns False for parameterized init functions (`*Init*`), which
+    actually configure state from their arguments — those go through
+    the LLM with a reference-probe transliteration, not this template.
+    """
+    for pat in _RESET_ONLY_PATTERNS:
         if re.match(pat, name):
             return True
     return False
