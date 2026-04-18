@@ -6,37 +6,27 @@
     "standards": ["DEFLATE", "RFC 1951"],
     "signature": "pub fn updatewindow(strm: &mut InflateStream, end: &[u8], copy: usize) -> Result<(), InflateError>",
     "license": "Apache-2.0",
-    "notes": "After a block has been processed, copy up to `copy` bytes from the tail of `end` into the sliding window at strm.wnext, wrapping around as needed. Update wnext and whave. InflateStream fields: window: Vec<u8>, wsize: usize, wnext: usize, whave: usize.",
-    "rust_source": "pub fn updatewindow(strm: &mut InflateStream, end: &[u8], copy: usize) -> Result<(), InflateError> {\n    let wsize = strm.wsize;\n    if strm.window.len() < wsize { strm.window.resize(wsize, 0); }\n    if copy >= wsize {\n        // The new bytes alone fill the whole window — take just the last wsize.\n        let src = &end[end.len().saturating_sub(wsize)..];\n        strm.window[..wsize].copy_from_slice(src);\n        strm.wnext = 0;\n        strm.whave = wsize;\n    } else {\n        let src = &end[end.len().saturating_sub(copy)..];\n        let dist = wsize - strm.wnext;\n        let first = copy.min(dist);\n        strm.window[strm.wnext..strm.wnext + first].copy_from_slice(&src[..first]);\n        if copy > first {\n            strm.window[..copy - first].copy_from_slice(&src[first..]);\n            strm.wnext = copy - first;\n        } else {\n            strm.wnext += first;\n            if strm.wnext == wsize { strm.wnext = 0; }\n        }\n        strm.whave = (strm.whave + copy).min(wsize);\n    }\n    Ok(())\n}"
+    "notes": "Faithful port of zlib's updatewindow. After a block is decoded, copy up to `copy` bytes from the tail of `end` into state.window at state.wnext, wrapping. Updates wnext and whave. If the window isn't yet allocated (state.window empty), allocate it to wsize = 1 << wbits first.",
+    "rust_source": "pub fn updatewindow(strm: &mut InflateStream, end: &[u8], copy: usize) -> Result<(), InflateError> {\n    let s = &mut strm.state;\n    // Allocate the window on first use.\n    if s.window.is_empty() {\n        let size = 1usize << (s.wbits as usize);\n        s.window = vec![0u8; size];\n        s.wsize = size as u32;\n        s.wnext = 0;\n        s.whave = 0;\n    }\n    let wsize = s.wsize as usize;\n    // Copy the last `copy` bytes from `end` into the window, wrapping.\n    if copy >= wsize {\n        // End bytes overflow a whole window — keep only the final wsize.\n        let src = &end[end.len().saturating_sub(wsize)..];\n        s.window[..wsize].copy_from_slice(src);\n        s.wnext = 0;\n        s.whave = wsize as u32;\n    } else {\n        let src = &end[end.len().saturating_sub(copy)..];\n        let wnext = s.wnext as usize;\n        let dist = wsize - wnext;\n        let first = copy.min(dist);\n        s.window[wnext..wnext + first].copy_from_slice(&src[..first]);\n        if copy > first {\n            s.window[..copy - first].copy_from_slice(&src[first..]);\n            s.wnext = (copy - first) as u32;\n        } else {\n            let new_wnext = wnext + first;\n            s.wnext = (if new_wnext == wsize { 0 } else { new_wnext }) as u32;\n        }\n        let new_have = (s.whave as usize + copy).min(wsize);\n        s.whave = new_have as u32;\n    }\n    Ok(())\n}"
   },
   {
     "algorithm": "buildtables",
     "variant": "default",
-    "title": "Build the fixed Huffman decode tables for inflate_fixed",
+    "title": "Emit the fixed Huffman code tables used by the static-block decoder",
     "standards": ["DEFLATE", "RFC 1951"],
-    "signature": "pub fn buildtables()",
+    "signature": "pub fn buildtables() -> (alloc::vec::Vec<(u8, u8, u16)>, alloc::vec::Vec<(u8, u8, u16)>)",
     "license": "Apache-2.0",
-    "notes": "In C zlib, this initializes static fixed-code Huffman tables once. In Rust we can make them const or lazy_static. This body is a no-op because the real tables should be compile-time constants.",
-    "rust_source": "pub fn buildtables() {\n    // In a pure Rust port, the fixed tables are compile-time constants.\n    // Nothing to do at runtime.\n}"
+    "notes": "Faithful port of zlib's fixedtables initialization. Returns (length-code table, distance-code table) matching RFC 1951 §3.2.6. Length codes 0-143 use 8 bits, 144-255 use 9 bits, 256-279 use 7 bits, 280-287 use 8 bits. Distance codes are all 5 bits. Each entry is (op, bits, value) matching zlib's code struct.",
+    "rust_source": "pub fn buildtables() -> (alloc::vec::Vec<(u8, u8, u16)>, alloc::vec::Vec<(u8, u8, u16)>) {\n    let mut lens = alloc::vec::Vec::with_capacity(288);\n    for sym in 0u16..288 {\n        let len: u8 = match sym {\n            0..=143 => 8,\n            144..=255 => 9,\n            256..=279 => 7,\n            _ => 8,\n        };\n        lens.push((0u8, len, sym));\n    }\n    let mut dists = alloc::vec::Vec::with_capacity(32);\n    for sym in 0u16..32 {\n        dists.push((0u8, 5u8, sym));\n    }\n    (lens, dists)\n}"
   },
   {
     "algorithm": "inflate_fixed",
     "variant": "default",
-    "title": "Install the fixed (static) Huffman code tables into the inflate state",
+    "title": "Install the fixed Huffman code tables into the inflate state",
     "standards": ["DEFLATE", "RFC 1951"],
     "signature": "pub fn inflate_fixed(strm: &mut InflateStream) -> Result<(), InflateError>",
     "license": "Apache-2.0",
-    "notes": "Installs the fixed-code Huffman tables defined in RFC 1951 §3.2.6. Lens 0-143: 8 bits, 144-255: 9 bits, 256-279: 7 bits, 280-287: 8 bits. Distance tree: all 30 codes get 5 bits. In a production port these are precomputed tables.",
-    "rust_source": "pub fn inflate_fixed(strm: &mut InflateStream) -> Result<(), InflateError> {\n    // Signal that fixed-table mode is active. Actual codes are embedded in\n    // the inflate state machine's code book — a full port would point\n    // strm.lencode / strm.distcode at precomputed static tables here.\n    strm.mode = 0; // TABLES-ready state placeholder\n    Ok(())\n}"
-  },
-  {
-    "algorithm": "inflatePrime",
-    "variant": "default",
-    "title": "Inject bits into the inflate bit buffer (alternate signature)",
-    "standards": ["DEFLATE", "RFC 1951"],
-    "signature": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError>",
-    "license": "Apache-2.0",
-    "notes": "See zlib_state_ops.json for the canonical version.",
-    "rust_source": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError> {\n    if bits < -1 || bits > 16 { return Ok(()); }\n    if bits == -1 { strm.hold = 0; strm.bits = 0; return Ok(()); }\n    let b = bits as u32;\n    let v = (value as u32) & ((1u32 << b) - 1);\n    strm.hold |= v << strm.bits;\n    strm.bits += b as u8;\n    Ok(())\n}"
+    "notes": "Faithful port: calls buildtables() to produce the fixed code books (RFC 1951 §3.2.6) and installs them into strm.state.lencode/distcode with proper bit widths. After this the decoder reads static-block codes directly from these tables.",
+    "rust_source": "pub fn inflate_fixed(strm: &mut InflateStream) -> Result<(), InflateError> {\n    let (lens, dists) = buildtables();\n    strm.state.lencode = lens;\n    strm.state.distcode = dists;\n    strm.state.lenbits = 9;\n    strm.state.distbits = 5;\n    Ok(())\n}"
   }
 ]

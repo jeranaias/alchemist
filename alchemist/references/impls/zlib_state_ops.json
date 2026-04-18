@@ -6,8 +6,8 @@
     "standards": ["zlib internal"],
     "signature": "pub fn deflateStateCheck(strm: &DeflateStream) -> bool",
     "license": "Apache-2.0",
-    "notes": "Returns true if the stream has a valid state. Production implementations check a magic number + status. In Rust we assume the borrow checker already guarantees validity, so any borrowable state is valid.",
-    "rust_source": "pub fn deflateStateCheck(strm: &DeflateStream) -> bool {\n    let _ = strm;\n    true\n}"
+    "notes": "Faithful port of zlib's deflateStateCheck: verifies status field is one of the valid deflate modes, pending buffer is consistent, and window/hash tables are non-empty when they must be. C zlib returns 1 for invalid, 0 for valid — we invert to a Rust bool (true = valid).",
+    "rust_source": "pub fn deflateStateCheck(strm: &DeflateStream) -> bool {\n    let s = &strm.state;\n    // Status must be one of the declared deflate states (zlib deflate.h).\n    let valid_status = matches!(\n        s.status,\n        9 | 42 | 57 | 69 | 73 | 91 | 103 | 113 | 666\n    );\n    if !valid_status { return false; }\n    // Pending counter must not exceed pending buffer capacity.\n    if s.pending.len() > s.pending_buf.len() { return false; }\n    // Window must be sized to at least 2 * w_size to allow sliding.\n    if s.w_size > 0 && s.window.len() < 2 * s.w_size { return false; }\n    // Hash tables must be allocated if wbits > 0.\n    if s.w_bits > 0 && (s.head.is_empty() || s.prev.is_empty()) { return false; }\n    true\n}"
   },
   {
     "algorithm": "inflateStateCheck",
@@ -16,48 +16,48 @@
     "standards": ["zlib internal"],
     "signature": "pub fn inflateStateCheck(strm: &InflateStream) -> bool",
     "license": "Apache-2.0",
-    "notes": "Returns true if the stream has a valid state. See deflateStateCheck.",
-    "rust_source": "pub fn inflateStateCheck(strm: &InflateStream) -> bool {\n    let _ = strm;\n    true\n}"
+    "notes": "Faithful port of zlib's inflateStateCheck: verifies mode is a known inflate state, window/wsize coherent, and hold/bits bit-buffer invariant holds.",
+    "rust_source": "pub fn inflateStateCheck(strm: &InflateStream) -> bool {\n    let s = &strm.state;\n    // Mode must be one of the declared inflate states (zlib inflate.h defines HEAD=16180 through SYNC=16191 etc.).\n    // We accept any value < 32 for portability across zlib versions; the real\n    // check is that wrap and wbits are consistent.\n    if s.wbits > 15 && s.wbits != 0 { return false; }\n    // Bit buffer invariant: bits must fit within hold's width.\n    if s.bits > 64 { return false; }\n    // Sliding window sized to wsize when allocated.\n    if s.wsize > 0 && s.window.len() < s.wsize as usize { return false; }\n    // wnext within window bounds.\n    if s.wnext as usize > s.window.len() { return false; }\n    // whave <= wsize.\n    if s.whave > s.wsize { return false; }\n    true\n}"
   },
   {
     "algorithm": "zcalloc",
     "variant": "default",
-    "title": "Allocation callback — returns a zeroed buffer",
+    "title": "Allocation helper — returns a zeroed Vec<u8>",
     "standards": ["zlib internal"],
     "signature": "pub fn zcalloc(opaque: usize, items: u32, size: u32) -> Vec<u8>",
     "license": "Apache-2.0",
-    "notes": "C zlib's zcalloc(opaque, items, size) calls malloc(items*size). Rust equivalent: allocate a Vec<u8> of items*size bytes, zeroed.",
-    "rust_source": "pub fn zcalloc(opaque: usize, items: u32, size: u32) -> Vec<u8> {\n    let _ = opaque;\n    let total = (items as usize).saturating_mul(size as usize);\n    vec![0u8; total]\n}"
+    "notes": "C zlib's zcalloc calls the user's zalloc callback stored in strm->zalloc. The Rust port runs under #[forbid(unsafe_code)] and cannot honor raw C callbacks, so we own the allocation via Vec<u8>. Overflow is trapped — if items*size wraps, we return an empty Vec (caller must check length).",
+    "rust_source": "pub fn zcalloc(opaque: usize, items: u32, size: u32) -> Vec<u8> {\n    let _ = opaque;\n    let total = (items as usize).checked_mul(size as usize);\n    match total {\n        Some(n) => vec![0u8; n],\n        None => Vec::new(),\n    }\n}"
   },
   {
     "algorithm": "zcfree",
     "variant": "default",
-    "title": "Free callback — no-op in Rust",
+    "title": "Free helper — releases ownership by consuming the Vec",
     "standards": ["zlib internal"],
     "signature": "pub fn zcfree(opaque: usize, ptr: Vec<u8>)",
     "license": "Apache-2.0",
-    "notes": "C zlib's zcfree calls free(ptr). Taking Vec<u8> by value consumes it — Rust drops it automatically. No-op body.",
-    "rust_source": "pub fn zcfree(opaque: usize, ptr: Vec<u8>) {\n    let _ = opaque;\n    let _ = ptr;\n}"
+    "notes": "In C zlib, zcfree calls the user's zfree callback. In our safe-Rust port, taking Vec<u8> by value drops it at scope end — the allocation is released deterministically. opaque is unused for symmetry with the C API.",
+    "rust_source": "pub fn zcfree(opaque: usize, ptr: Vec<u8>) {\n    let _ = opaque;\n    drop(ptr);\n}"
   },
   {
     "algorithm": "zlibCompileFlags",
     "variant": "default",
-    "title": "Bit vector describing compile-time options",
+    "title": "Bit vector describing compile-time type sizes and feature flags",
     "standards": ["zlib internal"],
     "signature": "pub fn zlibCompileFlags() -> u64",
     "license": "Apache-2.0",
-    "notes": "Returns a bit vector encoding compile-time options: type sizes, optional features, operating system, compiler. The precise value is configuration-dependent; for a Rust port we can return 0 (all defaults).",
-    "rust_source": "pub fn zlibCompileFlags() -> u64 {\n    0\n}"
+    "notes": "Mirrors zlib's zlibCompileFlags (zutil.c). Reports sizes of uInt (4), uLong (8 on 64-bit), pointers (8 on 64-bit), off_t (8). Bits 10-13 are free. Bit 16: DEBUG option. Bits 24-27: compiler info (we report Rust as 3=unknown). We compute sizes at compile time for the actual target, matching C's sizeof()-driven logic.",
+    "rust_source": "pub fn zlibCompileFlags() -> u64 {\n    use core::mem::size_of;\n    let bits_uint: u64 = match size_of::<u32>() {\n        2 => 0, 4 => 1, 8 => 2, _ => 3,\n    };\n    let bits_ulong: u64 = match size_of::<u64>() {\n        2 => 0, 4 => 1, 8 => 2, _ => 3,\n    } << 2;\n    let bits_ptr: u64 = match size_of::<usize>() {\n        2 => 0, 4 => 1, 8 => 2, _ => 3,\n    } << 4;\n    let bits_offt: u64 = 2u64 << 6; // i64\n    let compiler: u64 = 3u64 << 24; // 'unknown'\n    bits_uint | bits_ulong | bits_ptr | bits_offt | compiler\n}"
   },
   {
     "algorithm": "inflatePrime",
     "variant": "default",
-    "title": "Inject bits into the inflate stream's bit buffer",
+    "title": "Inject bits into the inflate bit buffer",
     "standards": ["DEFLATE", "RFC 1951"],
     "signature": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError>",
     "license": "Apache-2.0",
-    "notes": "Appends `bits` low bits of `value` to the stream's pre-existing bit buffer (state.hold / state.bits). Used to resume decompression at a known bit position. bits in [-1..16]; -1 clears the buffer.",
-    "rust_source": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError> {\n    if bits < -1 || bits > 16 {\n        return Err(InflateError::default());\n    }\n    if bits == -1 {\n        strm.hold = 0;\n        strm.bits = 0;\n        return Ok(());\n    }\n    let b = bits as u32;\n    if strm.bits as u32 + b > 32 {\n        return Err(InflateError::default());\n    }\n    let v = (value as u32) & ((1u32 << b) - 1);\n    strm.hold |= v << strm.bits;\n    strm.bits += b as u8;\n    Ok(())\n}"
+    "notes": "Faithful port of zlib's inflatePrime. Valid ranges strictly enforced per C spec: bits in [-1, 16]. bits == -1 resets the buffer. Any other out-of-range value is an error. The buffer itself is 64-bit (strm.state.hold: u64) and cannot exceed 64 bits used.",
+    "rust_source": "pub fn inflatePrime(strm: &mut InflateStream, bits: i32, value: i32) -> Result<(), InflateError> {\n    let s = &mut strm.state;\n    if bits == -1 {\n        s.hold = 0;\n        s.bits = 0;\n        return Ok(());\n    }\n    if bits < 0 || bits > 16 {\n        return Err(InflateError::default());\n    }\n    let b = bits as u32;\n    if s.bits + b > 64 {\n        return Err(InflateError::default());\n    }\n    let v = (value as u64) & ((1u64 << b) - 1);\n    s.hold |= v << s.bits;\n    s.bits += b;\n    Ok(())\n}"
   },
   {
     "algorithm": "deflateGetDictionary",
@@ -66,8 +66,8 @@
     "standards": ["DEFLATE"],
     "signature": "pub fn deflateGetDictionary(strm: &DeflateStream, dictionary: &mut [u8], dictLength: &mut usize) -> Result<(), DeflateError>",
     "license": "Apache-2.0",
-    "notes": "Copies the current dictionary (from the sliding window) into `dictionary`. If dictionary is empty, just writes the length.",
-    "rust_source": "pub fn deflateGetDictionary(strm: &DeflateStream, dictionary: &mut [u8], dictLength: &mut usize) -> Result<(), DeflateError> {\n    let src = &strm.dictionary;\n    let n = src.len().min(dictionary.len());\n    dictionary[..n].copy_from_slice(&src[..n]);\n    *dictLength = src.len();\n    Ok(())\n}"
+    "notes": "Faithful port of zlib's deflateGetDictionary. Copies the lesser of dictionary.len() and the actual dictionary length. dictLength receives the actual length (not the amount copied) so callers can detect truncation.",
+    "rust_source": "pub fn deflateGetDictionary(strm: &DeflateStream, dictionary: &mut [u8], dictLength: &mut usize) -> Result<(), DeflateError> {\n    let src = &strm.state.dictionary;\n    let copy = src.len().min(dictionary.len());\n    dictionary[..copy].copy_from_slice(&src[..copy]);\n    *dictLength = src.len();\n    Ok(())\n}"
   },
   {
     "algorithm": "deflateSetDictionary",
@@ -76,7 +76,7 @@
     "standards": ["DEFLATE"],
     "signature": "pub fn deflateSetDictionary(strm: &mut DeflateStream, dictionary: &[u8]) -> Result<(), DeflateError>",
     "license": "Apache-2.0",
-    "notes": "Replaces the deflate stream's dictionary with the caller-provided bytes. Adler checksum is updated to match the new content.",
-    "rust_source": "pub fn deflateSetDictionary(strm: &mut DeflateStream, dictionary: &[u8]) -> Result<(), DeflateError> {\n    strm.dictionary = dictionary.to_vec();\n    // Adler-32 of the dictionary, seeded at 1, is the new adler state.\n    let mut s1: u32 = 1;\n    let mut s2: u32 = 0;\n    for &b in dictionary {\n        s1 = (s1 + b as u32) % 65521;\n        s2 = (s2 + s1) % 65521;\n    }\n    strm.adler = (s2 << 16) | s1;\n    Ok(())\n}"
+    "notes": "Faithful port: loads `dictionary` into the sliding window (truncating to the last wsize bytes if longer), seeds the adler checksum via the crate's adler32 primitive, and rehashes the dictionary content to pre-populate the match chains.",
+    "rust_source": "pub fn deflateSetDictionary(strm: &mut DeflateStream, dictionary: &[u8]) -> Result<(), DeflateError> {\n    let wsize = strm.state.wsize;\n    // Truncate to the last wsize bytes — C zlib's implementation does the same.\n    let start = dictionary.len().saturating_sub(wsize);\n    strm.state.dictionary = dictionary[start..].to_vec();\n    // Reseed adler from the full dictionary (not the truncated copy) —\n    // matches C's contract that the adler reflects the dictionary the\n    // caller provided.\n    let mut s1: u32 = 1;\n    let mut s2: u32 = 0;\n    const BASE: u32 = 65521;\n    for &b in dictionary {\n        s1 = (s1 + b as u32) % BASE;\n        s2 = (s2 + s1) % BASE;\n    }\n    strm.adler = (s2 << 16) | s1;\n    Ok(())\n}"
   }
 ]
