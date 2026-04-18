@@ -111,6 +111,35 @@ class AlchemistLLM:
             t.sleep(check_interval)
         return False
 
+    def _wait_for_circuit_close(self, max_wait: float = 120.0) -> bool:
+        """Poll /health until the circuit breaker closes, or give up.
+
+        A tripped circuit ('deep': 'circuit_open') means every POST will
+        reject until the breaker half-opens. Pounding it during that
+        window keeps the counter high and delays recovery. Instead, poll
+        the health endpoint with a light GET.
+
+        Returns True when the circuit is healthy, False on timeout.
+        """
+        deadline = time.monotonic() + max_wait
+        poll_interval = 5.0
+        while time.monotonic() < deadline:
+            try:
+                resp = self._client.get(
+                    f"{self._endpoint.rstrip('/v1').rstrip('/')}/health",
+                    timeout=5,
+                )
+                if resp.status_code == 200:
+                    body = resp.json()
+                    deep = str(body.get("deep", "")).lower()
+                    if deep == "up" or "circuit" not in deep:
+                        return True
+            except httpx.HTTPError:
+                pass
+            time.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.5, 20.0)
+        return False
+
     def _post_with_retry(
         self, payload: dict, start: float, *, attempts: int = 5,
     ) -> tuple[httpx.Response | None, str]:
@@ -121,9 +150,11 @@ class AlchemistLLM:
         Non-retryable: 400 (malformed payload), 401, 404.
 
         Every call acquires a process-wide semaphore so multi-sample
-        fan-out can't flood the server.
+        fan-out can't flood the server. On repeated 503 we back off via
+        a health-poll rather than pounding the tripped circuit breaker.
         """
         last_err = ""
+        got_503 = False
         for attempt in range(1, attempts + 1):
             try:
                 with _INFLIGHT_SEM:
@@ -136,6 +167,14 @@ class AlchemistLLM:
                 # Retryable server errors
                 if resp.status_code in (429, 502, 503, 504):
                     last_err = f"HTTP {resp.status_code}"
+                    # On 503, the circuit breaker is likely tripped. Don't
+                    # hammer — poll /health until it closes, then retry once.
+                    if resp.status_code == 503 and not got_503:
+                        got_503 = True
+                        if self._wait_for_circuit_close(max_wait=120.0):
+                            continue  # circuit closed, retry immediately
+                        last_err = "HTTP 503: circuit breaker stayed open"
+                        return None, last_err
                     if attempt < attempts:
                         backoff = min(2.0 ** attempt, 30.0)
                         time.sleep(backoff)
