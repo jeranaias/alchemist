@@ -139,6 +139,39 @@ def _primary_input_name(alg: AlgorithmSpec) -> str:
 # Registry of category → fuzz strategy
 # ---------------------------------------------------------------------------
 
+def fuzz_hash_vectors(
+    dll: ctypes.CDLL,
+    alg: AlgorithmSpec,
+    binding: CFunctionBinding,
+    *,
+    count: int = 20,
+    seed: int = _FUZZ_SEED,
+) -> list[SpecTestVector]:
+    """Generate test vectors for a hash-category function.
+
+    The adapter returns bytes (the hash digest). Output is encoded as a
+    Rust byte-literal so the test generator can splice it verbatim.
+    """
+    fn = binding.load(dll)
+    rng = _rng(seed)
+    inputs = _gen_byte_inputs(rng, count)
+    vectors: list[SpecTestVector] = []
+    primary = _primary_input_name(alg)
+    for data in inputs:
+        digest = binding.adapter(fn, data)
+        if not isinstance(digest, (bytes, bytearray)):
+            # Unsupported return type for this adapter shape
+            continue
+        vectors.append(SpecTestVector(
+            description=f"fuzz_input_len_{len(data)}",
+            source=f"C reference: {binding.c_name}",
+            inputs={primary: _bytes_to_rust_literal(bytes(data))},
+            expected_output=_bytes_to_rust_literal(bytes(digest)),
+            tolerance="exact",
+        ))
+    return vectors
+
+
 def fuzz_for_spec(
     dll: ctypes.CDLL,
     alg: AlgorithmSpec,
@@ -153,10 +186,11 @@ def fuzz_for_spec(
         return []
     cat = alg.category or ""
     if cat == "checksum":
-        return fuzz_checksum_vectors(
-            dll, alg, binding, count=count, seed=seed,
-        )
-    # TODO (Phase 2): hash, cipher, compression adapters
+        return fuzz_checksum_vectors(dll, alg, binding, count=count, seed=seed)
+    if cat == "hash":
+        return fuzz_hash_vectors(dll, alg, binding, count=count, seed=seed)
+    # TODO (Phase 3): cipher (encrypt-then-decrypt roundtrip),
+    #                 compression (compress-then-decompress)
     return []
 
 
