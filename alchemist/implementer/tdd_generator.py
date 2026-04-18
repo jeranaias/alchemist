@@ -341,7 +341,15 @@ class TDDGenerator:
                     previous_failure=previous_failure, crate_dir=crate_dir,
                     test_name_prefix=test_name_prefix,
                 )
-                if ms is not None and ms.ok and ms.best and ms.best.tests_failed == 0:
+                # A multi-sample win requires BOTH zero failures AND at
+                # least one passing test. Otherwise cargo's "0 passed; 0
+                # failed" success counts as a win even when no test
+                # actually ran — the same P2 loophole as the main loop.
+                if (
+                    ms is not None and ms.ok and ms.best
+                    and ms.best.tests_failed == 0
+                    and ms.best.tests_passed >= 1
+                ):
                     attempt.final_compiled = True
                     attempt.tests_passed = True
                     console.print(

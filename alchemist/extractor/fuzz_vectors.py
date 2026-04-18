@@ -209,6 +209,18 @@ def _crc32_adapter(fn, data: bytes) -> int:
     return int(fn(0, buf, len(data)))
 
 
+def _byte_swap_adapter(fn, data: bytes) -> int:
+    """Adapter for byte_swap: interpret first 8 bytes of input as a u64 to swap.
+
+    The fuzz loop passes random byte strings; byte_swap is u64 → u64, so we
+    pack the first 8 bytes (padding with zeros) as little-endian and pass
+    that as the input value.
+    """
+    padded = bytes(data[:8].ljust(8, b"\x00"))
+    word = int.from_bytes(padded, "little")
+    return int(fn(word))
+
+
 ZLIB_BINDINGS: dict[str, CFunctionBinding] = {
     "adler32": CFunctionBinding(
         c_name="adler32",
