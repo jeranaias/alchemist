@@ -60,6 +60,7 @@ class GateResult:
 class VerificationReport:
     compile: GateResult
     anti_stub: GateResult
+    no_unsafe: GateResult
     test: GateResult
     differential: GateResult
 
@@ -68,13 +69,14 @@ class VerificationReport:
         return (
             self.compile.passed
             and self.anti_stub.passed
+            and self.no_unsafe.passed
             and self.test.passed
             and self.differential.passed
         )
 
     @property
     def first_failure(self) -> GateResult | None:
-        for g in (self.compile, self.anti_stub, self.test, self.differential):
+        for g in (self.compile, self.anti_stub, self.no_unsafe, self.test, self.differential):
             if not g.passed:
                 return g
         return None
@@ -85,6 +87,7 @@ class VerificationReport:
         return (
             f"[compile    {mark(self.compile)}] {self.compile.summary}\n"
             f"[anti-stub  {mark(self.anti_stub)}] {self.anti_stub.summary}\n"
+            f"[no-unsafe  {mark(self.no_unsafe)}] {self.no_unsafe.summary}\n"
             f"[test       {mark(self.test)}] {self.test.summary}\n"
             f"[diff       {mark(self.differential)}] {self.differential.summary}\n"
             f"OVERALL: {'PASS' if self.passed else 'FAIL'}"
@@ -160,6 +163,59 @@ class DifferentialTester:
             stderr=r.stderr,
         )
 
+    def gate_no_unsafe(self) -> GateResult:
+        """Structural no-unsafe proof.
+
+        Scans every .rs file under the workspace for any occurrence of
+        `unsafe` that isn't part of the structural `#![forbid(unsafe_code)]`
+        attribute the skeleton emits. Also checks that every crate's lib.rs
+        carries the forbid attribute.
+        """
+        console.print("[cyan]gate: structural no-unsafe proof[/cyan]")
+        import re as _re
+        rs_files = [
+            p for p in self.rust_workspace.rglob("*.rs")
+            if "target" not in p.parts
+        ]
+        # Every lib.rs must have #![forbid(unsafe_code)]
+        forbidden_missing: list[str] = []
+        # Any use of `unsafe` outside the forbid attribute is a violation.
+        unsafe_uses: list[str] = []
+        for p in rs_files:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if p.name == "lib.rs":
+                if "#![forbid(unsafe_code)]" not in text:
+                    forbidden_missing.append(str(p))
+            # Strip the attribute itself so we don't flag the word "unsafe" in it.
+            stripped = _re.sub(
+                r"#!\[forbid\(unsafe_code\)\]", "", text
+            )
+            # Look for the unsafe keyword as a standalone token.
+            for m in _re.finditer(r"\bunsafe\b", stripped):
+                # Get the line for context
+                line_start = stripped.rfind("\n", 0, m.start()) + 1
+                line_end = stripped.find("\n", m.end())
+                if line_end == -1:
+                    line_end = len(stripped)
+                line = stripped[line_start:line_end]
+                unsafe_uses.append(f"{p}: {line.strip()[:120]}")
+        passed = not forbidden_missing and not unsafe_uses
+        if passed:
+            summary = f"zero unsafe across {len(rs_files)} files"
+        else:
+            parts = []
+            if forbidden_missing:
+                parts.append(f"{len(forbidden_missing)} lib.rs missing forbid attr")
+            if unsafe_uses:
+                parts.append(f"{len(unsafe_uses)} unsafe usages")
+            summary = "; ".join(parts)
+        return GateResult(
+            name="no-unsafe",
+            passed=passed,
+            summary=summary,
+            stdout="\n".join(forbidden_missing + unsafe_uses[:20]),
+        )
+
     def gate_anti_stub(self) -> GateResult:
         console.print("[cyan]gate 2/4: anti-stub scan[/cyan]")
         report = scan_workspace(self.rust_workspace)
@@ -225,13 +281,16 @@ class DifferentialTester:
 
     def run_all(self) -> VerificationReport:
         compile_r = self.gate_compile()
-        # Even if compile fails, run anti-stub so the report is informative
+        # Run all informational gates regardless of compile outcome so the
+        # report is complete.
         anti_r = self.gate_anti_stub()
+        no_unsafe_r = self.gate_no_unsafe()
         if not compile_r.passed:
             # Can't run tests if it doesn't compile
             return VerificationReport(
                 compile=compile_r,
                 anti_stub=anti_r,
+                no_unsafe=no_unsafe_r,
                 test=GateResult(
                     name="test", passed=False,
                     summary="skipped — compile failed",
@@ -249,6 +308,7 @@ class DifferentialTester:
         return VerificationReport(
             compile=compile_r,
             anti_stub=anti_r,
+            no_unsafe=no_unsafe_r,
             test=test_r,
             differential=diff_r,
         )

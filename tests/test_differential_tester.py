@@ -25,6 +25,7 @@ def test_report_passed_requires_all_gates():
     r = VerificationReport(
         compile=_fake_gate("compile", True),
         anti_stub=_fake_gate("anti-stub", True),
+        no_unsafe=_fake_gate("no-unsafe", True),
         test=_fake_gate("test", True),
         differential=_fake_gate("differential", True),
     )
@@ -32,10 +33,11 @@ def test_report_passed_requires_all_gates():
 
 
 def test_report_fails_if_any_gate_fails():
-    for fail in ("compile", "anti_stub", "test", "differential"):
+    for fail in ("compile", "anti_stub", "no_unsafe", "test", "differential"):
         gates = {
             "compile": _fake_gate("compile", True),
             "anti_stub": _fake_gate("anti-stub", True),
+            "no_unsafe": _fake_gate("no-unsafe", True),
             "test": _fake_gate("test", True),
             "differential": _fake_gate("differential", True),
         }
@@ -107,6 +109,7 @@ def test_verification_summary_string_contains_all_gates():
     r = VerificationReport(
         compile=_fake_gate("compile", True, "clean"),
         anti_stub=_fake_gate("anti-stub", False, "3 violations"),
+        no_unsafe=_fake_gate("no-unsafe", True, "zero unsafe"),
         test=_fake_gate("test", True, "10 passed"),
         differential=_fake_gate("differential", False, "no config"),
     )
