@@ -434,6 +434,10 @@ def _lib_rs_for(
     all_error_types: list[ErrorType] | None = None,
 ) -> str:
     lines: list[str] = []
+    # Structural no-unsafe proof: every Alchemist-generated crate forbids
+    # unsafe code at the crate level. If any function needs unsafe, the
+    # pipeline fails rather than ship it. This is a P5 invariant.
+    lines.append("#![forbid(unsafe_code)]")
     lines.append("#![allow(unused_imports)]")
     if no_std:
         lines.append("#![no_std]")

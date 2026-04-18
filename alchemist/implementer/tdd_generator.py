@@ -425,13 +425,31 @@ class TDDGenerator:
                 console.print(f"  [green]{alg.name}: tests pass on iter {iteration}[/green]")
                 return attempt
 
-            # If no matching tests exist, fall back to smoke
+            # If no matching tests exist, this is NOT a pass. Per P2 (no
+            # compile-only passes), every function must have a real
+            # correctness test. Mark as failed and continue iterating;
+            # the fuzz-vector pipeline (Phase 2) will fill the gap. Until
+            # then, "no vectors" means the function cannot be verified
+            # and must not be claimed as passing.
             combined = tout + "\n" + terr
             if f"0 passed" in combined and f"0 failed" in combined:
-                # No tests matched; accept the iteration (compile was ok)
-                attempt.tests_passed = True
-                console.print(f"  [dim]{alg.name}: no test matched, compile-only pass[/dim]")
-                return attempt
+                attempt.last_error = (
+                    "no correctness test available for this function; "
+                    "compile-only acceptance is forbidden by the "
+                    "zero-shortcut policy"
+                )
+                previous_failure = (
+                    "## No tests run — compile-only acceptance is forbidden\n\n"
+                    "This function needs a test vector but none exists in the "
+                    "spec or standards catalog. The pipeline will not accept "
+                    "an implementation that cannot be verified. Ensure the "
+                    "spec extracts test vectors, or wait for the fuzz-vector "
+                    "pipeline to generate them."
+                )
+                console.print(
+                    f"  [red]{alg.name}: no test vectors — cannot verify correctness[/red]"
+                )
+                continue
 
             attempt.last_error = _top_lines(terr, 5)
             previous_failure = (
@@ -917,7 +935,10 @@ class TDDGenerator:
             existing = module_path.read_text(encoding="utf-8")
             if f"pub fn {miss.c_function}" in existing:
                 continue
-            # Append an unimplemented stub with the C function name so splicer works
+            # Append a temporary stub purely so the splicer has a target to
+            # replace. CRITICAL: after _fill_in_function runs, the stub must
+            # either be replaced with real code OR be reverted. A surviving
+            # stub in the output violates P1 (no placeholder bodies).
             sig = f"pub fn {miss.c_function}(input: &[u8]) -> u32"
             stub = (
                 f"\n\n/// Auto-added stub to satisfy API completeness check.\n"
@@ -928,7 +949,6 @@ class TDDGenerator:
                 f"}}\n"
             )
             module_path.write_text(existing + stub, encoding="utf-8")
-            # Ask for a real impl
             synthetic = AlgorithmSpec(
                 name=miss.c_function,
                 display_name=miss.c_function,
@@ -940,11 +960,22 @@ class TDDGenerator:
                 test_vectors=alg.test_vectors,
                 mathematical_description=alg.mathematical_description,
             )
-            self._fill_in_function(
+            fill_attempt = self._fill_in_function(
                 synthetic, spec_module,
                 next((c for c in arch.crates if c.name == miss.crate), None) or arch.crates[0],
                 specs, arch, workspace_dir,
             )
+            # If the fill failed, the stub is still in the file. Revert it
+            # rather than leave an unimplemented!() body in the output.
+            if not fill_attempt.tests_passed:
+                after = module_path.read_text(encoding="utf-8")
+                if f"unimplemented!(\"missing fn: {miss.c_function}\")" in after:
+                    # Stub survived — strip it and restore prior content
+                    module_path.write_text(existing, encoding="utf-8")
+                    console.print(
+                        f"  [red]{miss.c_function}: fill failed, stub "
+                        f"removed from output (P1: no placeholder bodies)[/red]"
+                    )
 
     def _build_project_context(
         self, specs: list[ModuleSpec], architecture: CrateArchitecture,
