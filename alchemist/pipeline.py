@@ -443,9 +443,21 @@ def run_translate_all(
 
     # --- Stage 5: Verify (mandatory differential gate) ---
     if start_stage <= 5 <= end_stage:
+        # Auto-select a diff_config based on subject name when caller
+        # didn't supply one. zlib has a pre-built config; other subjects
+        # will gain configs as they're added (mbedTLS, lwIP, ...).
+        resolved_diff_config = diff_config
+        if resolved_diff_config is None:
+            subject_name = source.name.lower()
+            if "zlib" in subject_name:
+                from alchemist.verifier.zlib_config import zlib_diff_config
+                resolved_diff_config = zlib_diff_config(c_source_dir=source)
+                console.print(
+                    "[cyan]Stage 5: auto-selected zlib differential config[/cyan]"
+                )
         outcome = run_verify_stage(
             source, out,
-            diff_config=diff_config,
+            diff_config=resolved_diff_config,
             refuse_without_diff=refuse_without_diff,
         )
         report.add(outcome)
