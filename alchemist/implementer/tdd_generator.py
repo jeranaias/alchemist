@@ -207,6 +207,11 @@ class TDDGenerator:
 
         # Phase B: tests (append test blocks)
         console.print("[bold cyan]TDD Phase B: test emission[/bold cyan]")
+        # Fuzz-vector backfill: for every algorithm without extracted vectors
+        # AND without catalog vectors, try to synthesize vectors by calling
+        # the C reference library. Closes the P2 loophole where functions
+        # with no vectors would silently compile-only-pass.
+        self._backfill_fuzz_vectors(specs)
         test_results = generate_tests_for_workspace(specs, architecture, output_dir)
         total_tests = sum(t.tests_written for t in test_results)
         console.print(f"  emitted {total_tests} tests across {len(test_results)} crates")
@@ -976,6 +981,61 @@ class TDDGenerator:
                         f"  [red]{miss.c_function}: fill failed, stub "
                         f"removed from output (P1: no placeholder bodies)[/red]"
                     )
+
+    def _backfill_fuzz_vectors(self, specs: list[ModuleSpec]) -> None:
+        """For every algorithm with no test_vectors, try fuzz generation.
+
+        Uses the C reference DLL (if discoverable) to compute ground-truth
+        outputs for random inputs. Vectors are appended in-place so Phase B
+        will emit real correctness tests.
+
+        Currently supports: checksum-category functions against zlib1.dll.
+        Extensible to hash/cipher/compression as bindings are added.
+        """
+        from alchemist.standards import lookup_test_vectors
+        # Look up the C DLL for this translation. Convention: subjects
+        # directory contains a reference DLL the extractor can see.
+        # For zlib we use verify/zlib1.dll.
+        dll_path = self._locate_c_dll()
+        if dll_path is None or not dll_path.exists():
+            return
+        try:
+            from alchemist.extractor.fuzz_vectors import (
+                load_zlib_dll, ZLIB_BINDINGS, fuzz_for_spec,
+            )
+            dll = load_zlib_dll(dll_path)
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [dim]fuzz backfill skipped: {e}[/dim]")
+            return
+        added = 0
+        for mod in specs:
+            for alg in mod.algorithms:
+                if alg.test_vectors:
+                    continue
+                if lookup_test_vectors(alg.name):
+                    continue
+                vectors = fuzz_for_spec(dll, alg, ZLIB_BINDINGS)
+                if vectors:
+                    alg.test_vectors = vectors
+                    added += len(vectors)
+        if added:
+            console.print(f"  [cyan]fuzz backfill: generated {added} vectors[/cyan]")
+
+    def _locate_c_dll(self) -> Path | None:
+        """Find a C reference library for fuzz-vector generation.
+
+        Today: hardcoded to verify/zlib1.dll for the zlib subject. Phase 1
+        will replace this with auto-build via `build_c_dll.py`.
+        """
+        candidates = [
+            Path("verify/zlib1.dll"),
+            Path("verify/zlib.so"),
+            Path("verify/libz.so"),
+        ]
+        for c in candidates:
+            if c.exists():
+                return c.resolve()
+        return None
 
     def _build_project_context(
         self, specs: list[ModuleSpec], architecture: CrateArchitecture,
