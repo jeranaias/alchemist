@@ -969,7 +969,10 @@ class TDDGenerator:
             f"Description: {alg.description}\n"
             f"Standards: {', '.join(alg.referenced_standards) or '(none)'}"
         )
-        fixer = HolisticFixer(llm=self.llm, max_iter=2, reject_stubs=True)
+        # Cap holistic at 1 iteration. The fixer often returns empty patches
+        # when the LLM can't diagnose the issue, and retrying wastes calls
+        # without improving the state.
+        fixer = HolisticFixer(llm=self.llm, max_iter=1, reject_stubs=True)
         fixer.fix_crate(crate_dir, spec_context=spec_ctx, extra_error_ctx=error_ctx)
 
     def _fix_missing(
