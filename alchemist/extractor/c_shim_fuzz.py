@@ -60,6 +60,30 @@ class CShimField:
 
 
 @dataclass
+class CShimPureBinding:
+    """Binds a pure (non-state-mutating) function to its C shim entry.
+
+    Example: bi_reverse(code: u32, len: i32) -> u32 — no state involved.
+    The shim runner returns the value; Python packages args and fetches
+    the return value directly.
+    """
+    name: str
+    # Scalar args (ordered) — each becomes a Rust test let-binding.
+    args: list[StateFieldSpec]
+    # ctypes argument types for the runner (must match shim signature)
+    argtypes: list = field(default_factory=list)
+    # ctypes return type
+    restype: Any = ctypes.c_uint
+    # Return type as Rust literal suffix (e.g., "u32")
+    return_rust_type: str = "u32"
+    # Shim runner entry point
+    runner: str = ""
+
+    def resolved_runner(self) -> str:
+        return self.runner or f"shim_run_{self.name}"
+
+
+@dataclass
 class CShimMutatorBinding:
     """Binds a state-mutator fn to its C shim entry + field serializers."""
     name: str
@@ -128,6 +152,62 @@ def _get_field(dll: ctypes.CDLL, fs: CShimField) -> Any:
     if isinstance(val, int):
         return val
     return val.value if hasattr(val, "value") else val
+
+
+def fuzz_pure_shim(
+    dll: ctypes.CDLL,
+    alg: AlgorithmSpec,
+    binding: CShimPureBinding,
+    *,
+    count: int = 16,
+    seed: int = 0x41_4C_43_48,
+) -> list[SpecTestVector]:
+    """Generate (args → return value) vectors via pure C shim entry."""
+    rng = random.Random(seed)
+    runner = getattr(dll, binding.resolved_runner())
+    runner.argtypes = list(binding.argtypes)
+    runner.restype = binding.restype
+    vectors: list[SpecTestVector] = []
+    for i in range(count):
+        values: dict[str, Any] = {}
+        call_args: list[Any] = []
+        for arg in binding.args:
+            v = arg.fuzzer(rng) if arg.fuzzer else 0
+            values[arg.name] = v
+            # Build ctypes arg matching declared rust_type
+            call_args.append(_rust_to_ctypes(v, arg.rust_type))
+        ret = runner(*call_args)
+        if hasattr(ret, "value"):
+            ret = ret.value
+        rendered_inputs = {
+            arg.name: _render_value(values[arg.name], arg.rust_type)
+            for arg in binding.args
+        }
+        expected = _render_value(int(ret), binding.return_rust_type)
+        vectors.append(SpecTestVector(
+            description=f"c_shim_pure_fuzz_{i}",
+            source=f"C reference via shim: {binding.resolved_runner()}",
+            inputs=rendered_inputs,
+            expected_output=expected,
+            tolerance="exact",
+        ))
+    return vectors
+
+
+def _rust_to_ctypes(value: int, rust_type: str) -> Any:
+    """Convert a Python int to the matching ctypes primitive."""
+    t = rust_type.strip()
+    if t == "u8": return ctypes.c_ubyte(value)
+    if t == "u16": return ctypes.c_ushort(value)
+    if t == "u32": return ctypes.c_uint(value)
+    if t == "u64": return ctypes.c_ulonglong(value)
+    if t == "usize": return ctypes.c_size_t(value)
+    if t == "i8": return ctypes.c_byte(value)
+    if t == "i16": return ctypes.c_short(value)
+    if t == "i32": return ctypes.c_int(value)
+    if t == "i64": return ctypes.c_longlong(value)
+    if t == "isize": return ctypes.c_ssize_t(value)
+    return ctypes.c_uint(value)
 
 
 def fuzz_with_shim(
@@ -211,6 +291,20 @@ def _fuzz_byte_buf(rng: random.Random) -> bytes:
 
 def _fuzz_u16_vec_fixed16(rng: random.Random) -> list[int]:
     return [rng.randint(0, 0xFFFF) for _ in range(16)]
+
+
+ZLIB_SHIM_PURE_BINDINGS: dict[str, CShimPureBinding] = {
+    "bi_reverse": CShimPureBinding(
+        name="bi_reverse",
+        args=[
+            StateFieldSpec("code", "u32", fuzz_u32),
+            StateFieldSpec("len", "i32", lambda rng: rng.randint(1, 15)),
+        ],
+        argtypes=[ctypes.c_uint, ctypes.c_int],
+        restype=ctypes.c_uint,
+        return_rust_type="u32",
+    ),
+}
 
 
 ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {

@@ -1141,8 +1141,9 @@ class TDDGenerator:
                 ZLIB_STATE_MUTATORS, fuzz_state_mutator,
             )
             from alchemist.extractor.c_shim_fuzz import (
-                ZLIB_SHIM_BINDINGS, locate_zlib_shim,
-                _load_shim, fuzz_with_shim,
+                ZLIB_SHIM_BINDINGS, ZLIB_SHIM_PURE_BINDINGS,
+                locate_zlib_shim, _load_shim,
+                fuzz_with_shim, fuzz_pure_shim,
             )
             dll = load_zlib_dll(dll_path)
             # Load the C shim DLL if present — its C-reference-based
@@ -1157,7 +1158,16 @@ class TDDGenerator:
             for alg in mod.algorithms:
                 if alg.test_vectors:
                     continue
-                # C-shim path (highest priority): byte-exact against C ref
+                # C-shim pure-function path
+                if shim_dll is not None and alg.name in ZLIB_SHIM_PURE_BINDINGS:
+                    vectors = fuzz_pure_shim(
+                        shim_dll, alg, ZLIB_SHIM_PURE_BINDINGS[alg.name],
+                    )
+                    if vectors:
+                        alg.test_vectors = vectors
+                        added += len(vectors)
+                    continue
+                # C-shim state-mutator path
                 if shim_dll is not None and alg.name in ZLIB_SHIM_BINDINGS:
                     vectors = fuzz_with_shim(
                         shim_dll, alg, ZLIB_SHIM_BINDINGS[alg.name],
