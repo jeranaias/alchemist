@@ -329,6 +329,11 @@ class TDDGenerator:
 
         # Fast path: deterministic template for init/reset functions.
         # These fail LLM generation consistently — bypass the loop.
+        # CRITICAL: we still run the correctness test after the template
+        # lands. Per P2, a template compiling is not a correctness proof.
+        # If tests exist and pass, great. If no tests exist, fall back to
+        # the compile-only accept (init fns with no observable output
+        # cannot be verified without state-mutator bindings).
         template_code = try_init_template(alg)
         if template_code:
             current = module_path.read_text(encoding="utf-8")
@@ -337,13 +342,46 @@ class TDDGenerator:
                 module_path.write_text(replaced, encoding="utf-8")
                 ok_compile, _err = _run_cargo_check(crate_dir, timeout=180)
                 if ok_compile:
-                    attempt.iterations = 0
-                    attempt.final_compiled = True
-                    attempt.tests_passed = True  # no tests for init fns
-                    console.print(f"  [green]{alg.name}: init template (no LLM)[/green]")
-                    return attempt
-                # Template didn't compile — revert and fall through to LLM
-                module_path.write_text(current, encoding="utf-8")
+                    # Run the test filter to see if we have real tests
+                    ok_test, tout, terr = _run_cargo_test_filter(
+                        crate_dir, test_name_prefix,
+                    )
+                    combined = tout + "\n" + terr
+                    import re as _re
+                    ran_counts = [int(m) for m in _re.findall(
+                        r"running\s+(\d+)\s+tests?", combined
+                    )]
+                    had_real_tests = any(n > 0 for n in ran_counts)
+                    if ok_test and had_real_tests:
+                        attempt.iterations = 0
+                        attempt.final_compiled = True
+                        attempt.tests_passed = True
+                        console.print(
+                            f"  [green]{alg.name}: init template + tests pass[/green]"
+                        )
+                        return attempt
+                    if not ok_test:
+                        # Template compiled but tests failed — revert and
+                        # let LLM iteration take over
+                        module_path.write_text(current, encoding="utf-8")
+                    elif had_real_tests:
+                        # Tests passed (unreachable — already handled above)
+                        pass
+                    else:
+                        # No tests exist. Template is a tombstone. Keep it
+                        # but mark the attempt as failed: P2 forbids compile-
+                        # only pass.
+                        attempt.last_error = (
+                            "init template accepted but no tests exist to "
+                            "verify correctness (P2 forbids compile-only pass)"
+                        )
+                        console.print(
+                            f"  [yellow]{alg.name}: init template landed but unverified[/yellow]"
+                        )
+                        return attempt
+                else:
+                    # Template didn't compile — revert and fall through to LLM
+                    module_path.write_text(current, encoding="utf-8")
 
         for iteration in range(1, self.max_iter_per_fn + 1):
             attempt.iterations = iteration
