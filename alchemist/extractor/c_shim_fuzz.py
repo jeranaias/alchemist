@@ -298,7 +298,7 @@ ZLIB_SHIM_PURE_BINDINGS: dict[str, CShimPureBinding] = {
         name="bi_reverse",
         args=[
             StateFieldSpec("code", "u32", fuzz_u32),
-            StateFieldSpec("len", "i32", lambda rng: rng.randint(1, 15)),
+            StateFieldSpec("len", "u8", lambda rng: rng.randint(1, 15)),
         ],
         argtypes=[ctypes.c_uint, ctypes.c_int],
         restype=ctypes.c_uint,
