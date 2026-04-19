@@ -1140,7 +1140,15 @@ class TDDGenerator:
             from alchemist.extractor.state_mutator import (
                 ZLIB_STATE_MUTATORS, fuzz_state_mutator,
             )
+            from alchemist.extractor.c_shim_fuzz import (
+                ZLIB_SHIM_BINDINGS, locate_zlib_shim,
+                _load_shim, fuzz_with_shim,
+            )
             dll = load_zlib_dll(dll_path)
+            # Load the C shim DLL if present — its C-reference-based
+            # state-mutator vectors take priority over Python reference ports.
+            shim_path = locate_zlib_shim()
+            shim_dll = _load_shim(shim_path) if shim_path else None
         except Exception as e:  # noqa: BLE001
             console.print(f"  [dim]fuzz backfill skipped: {e}[/dim]")
             return
@@ -1149,10 +1157,16 @@ class TDDGenerator:
             for alg in mod.algorithms:
                 if alg.test_vectors:
                     continue
-                # State-mutator path: if this function has a state-mutator
-                # binding with a Python reference port, generate state
-                # pre/post-state vectors. Covers &mut DeflateState functions
-                # that the scalar fuzz pipeline can't handle.
+                # C-shim path (highest priority): byte-exact against C ref
+                if shim_dll is not None and alg.name in ZLIB_SHIM_BINDINGS:
+                    vectors = fuzz_with_shim(
+                        shim_dll, alg, ZLIB_SHIM_BINDINGS[alg.name],
+                    )
+                    if vectors:
+                        alg.test_vectors = vectors
+                        added += len(vectors)
+                    continue
+                # State-mutator path (fallback): Python reference port
                 state_binding = ZLIB_STATE_MUTATORS.get(alg.name)
                 if state_binding is not None:
                     vectors = fuzz_state_mutator(alg, state_binding)
