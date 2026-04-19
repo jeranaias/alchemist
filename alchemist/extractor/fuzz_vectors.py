@@ -98,7 +98,9 @@ def fuzz_checksum_vectors(
     """Generate test vectors for a checksum-category function.
 
     The adapter is expected to accept (resolved_fn, data_bytes) and
-    return an integer checksum value.
+    return an integer checksum value. Handles both byte-slice-input
+    functions (adler32, crc32) and scalar-input functions (crc32_combine_gen64)
+    by rendering each parameter according to its declared rust_type.
     """
     fn = binding.load(dll)
     rng = _rng(seed)
@@ -106,17 +108,46 @@ def fuzz_checksum_vectors(
     vectors: list[SpecTestVector] = []
     for data in inputs:
         output = binding.adapter(fn, data)
-        # Emit as a Rust byte-slice literal so the test generator can
-        # splice it directly with no type conversion.
-        rust_literal = _bytes_to_rust_literal(data)
+        inputs_dict = _render_param_literals(alg, data)
+        ret = (alg.return_type or "u32").strip()
+        if ret in ("u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"):
+            expected = f"{int(output)}{ret}"
+        else:
+            expected = f"0x{output:08x}"
         vectors.append(SpecTestVector(
             description=f"fuzz_input_len_{len(data)}",
             source=f"C reference: {binding.c_name}",
-            inputs={_primary_input_name(alg): rust_literal},
-            expected_output=f"0x{output:08x}",
+            inputs=inputs_dict,
+            expected_output=expected,
             tolerance="exact",
         ))
     return vectors
+
+
+def _render_param_literals(alg: AlgorithmSpec, data: bytes) -> dict[str, str]:
+    """Render each parameter's value as a Rust literal consuming bytes."""
+    result: dict[str, str] = {}
+    offset = 0
+    for p in alg.inputs or []:
+        t = (p.rust_type or "").strip()
+        if "[u8]" in t or "Vec<u8>" in t:
+            result[p.name] = _bytes_to_rust_literal(bytes(data))
+            continue
+        if _re_scalar.fullmatch(t):
+            size = _scalar_size(t)
+            chunk = bytes(data[offset:offset + size].ljust(size, b"\x00"))
+            val = int.from_bytes(chunk, "little")
+            if t.startswith("i") and val & (1 << (size * 8 - 1)):
+                val -= 1 << (size * 8)
+            if val < 0:
+                result[p.name] = f"({val}{t})"
+            else:
+                result[p.name] = f"{val}{t}"
+            offset += size
+            continue
+        # Fallback
+        result[p.name] = _bytes_to_rust_literal(bytes(data))
+    return result
 
 
 def _bytes_to_rust_literal(data: bytes) -> str:

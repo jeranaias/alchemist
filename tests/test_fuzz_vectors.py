@@ -107,8 +107,8 @@ def test_adler32_fuzz_matches_canonical_empty():
     vecs = fuzz_checksum_vectors(dll, _adler_spec(), ZLIB_BINDINGS["adler32"], count=5)
     empty = [v for v in vecs if v.inputs["input"] == "&[]"]
     assert empty
-    # RFC 1950: Adler-32 of empty input is 0x00000001
-    assert empty[0].expected_output == "0x00000001"
+    # RFC 1950: Adler-32 of empty input is 1
+    assert empty[0].expected_output in ("0x00000001", "1u32")
 
 
 @pytest.mark.skipif(not DLL_PATH.exists(), reason="zlib1.dll not built")
@@ -128,7 +128,7 @@ def test_crc32_fuzz_matches_empty():
     empty = [v for v in vecs if v.inputs["input"] == "&[]"]
     assert empty
     # CRC-32 of empty is 0
-    assert empty[0].expected_output == "0x00000000"
+    assert empty[0].expected_output in ("0x00000000", "0u32")
 
 
 @pytest.mark.skipif(not DLL_PATH.exists(), reason="zlib1.dll not built")
