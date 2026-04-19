@@ -262,6 +262,30 @@ def _slide_hash_ref(s: dict[str, Any]) -> dict[str, Any]:
     return {"wsize": wsize, "head": new_head, "prev": new_prev}
 
 
+def _send_bits_ref(s: dict[str, Any]) -> dict[str, Any]:
+    """Faithful port of zlib trees.c send_bits.
+
+    Writes `length` bits of `value` into the bit buffer.
+    Requires extra args `value` and `length` in the input dict.
+    """
+    bi_buf = s["bi_buf"] & 0xFFFF
+    bi_valid = s["bi_valid"]
+    pending = list(s.get("pending", []))
+    value = s["value"] & 0xFFFF
+    length = s["length"]
+    BUF_SIZE = 16
+    if bi_valid > BUF_SIZE - length:
+        bi_buf |= (value << bi_valid) & 0xFFFF
+        pending.append(bi_buf & 0xFF)
+        pending.append((bi_buf >> 8) & 0xFF)
+        bi_buf = (value >> (BUF_SIZE - bi_valid)) & 0xFFFF
+        bi_valid = bi_valid + length - BUF_SIZE
+    else:
+        bi_buf |= (value << bi_valid) & 0xFFFF
+        bi_valid += length
+    return {"bi_buf": bi_buf, "bi_valid": bi_valid, "pending": pending}
+
+
 def _init_block_ref(s: dict[str, Any]) -> dict[str, Any]:
     """Faithful port of zlib trees.c init_block.
 
@@ -325,5 +349,19 @@ ZLIB_STATE_MUTATORS: dict[str, StateMutatorBinding] = {
             StateFieldSpec("matches", "u32", fuzz_u32),
         ],
         reference=_init_block_ref,
+    ),
+    "send_bits": StateMutatorBinding(
+        name="send_bits",
+        state_type="DeflateState",
+        fields_in=[
+            StateFieldSpec("bi_buf", "u16", fuzz_u16),
+            StateFieldSpec("bi_valid", "i32", lambda rng: rng.randint(0, 15)),
+            StateFieldSpec("pending", "Vec<u8>", fuzz_small_vec_u8(16)),
+        ],
+        extra_args=[
+            StateFieldSpec("value", "u16", fuzz_u16),
+            StateFieldSpec("length", "u8", lambda rng: rng.randint(1, 15)),
+        ],
+        reference=_send_bits_ref,
     ),
 }
