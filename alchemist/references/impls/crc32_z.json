@@ -1,0 +1,10 @@
+{
+  "algorithm": "crc32_z",
+  "variant": "ieee_reflected_explicit_len",
+  "title": "CRC-32 with explicit length (RFC 1952, zlib crc32_z variant)",
+  "standards": ["RFC 1952", "CRC-32"],
+  "signature": "pub fn crc32_z(crc: u32, buf: &[u8], len: usize) -> u32",
+  "license": "Apache-2.0",
+  "notes": "zlib's crc32_z takes an explicit length. Uses the reflected IEEE 802.3 CRC-32 polynomial 0xEDB88320. Initial crc=0 starts fresh. Honor min(len, buf.len()) for safe indexing. Assumes CRC32_TABLE is available from zlib-types (256-entry precomputed table).",
+  "rust_source": "pub fn crc32_z(crc: u32, buf: &[u8], len: usize) -> u32 {\n    let mut c = !crc;\n    let n = len.min(buf.len());\n    for i in 0..n {\n        let idx = (c ^ buf[i] as u32) as u8;\n        c = CRC32_TABLE[idx as usize] ^ (c >> 8);\n    }\n    !c\n}"
+}
