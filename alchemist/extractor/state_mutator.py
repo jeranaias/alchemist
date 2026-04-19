@@ -350,6 +350,23 @@ ZLIB_STATE_MUTATORS: dict[str, StateMutatorBinding] = {
         ],
         reference=_init_block_ref,
     ),
+    "_tr_init": StateMutatorBinding(
+        name="_tr_init",
+        state_type="DeflateState",
+        fields_in=[
+            StateFieldSpec("bi_buf", "u16", fuzz_u16),
+            StateFieldSpec("bi_valid", "i32", fuzz_i32),
+            StateFieldSpec("opt_len", "u64", fuzz_u32),
+            StateFieldSpec("static_len", "u64", fuzz_u32),
+            StateFieldSpec("last_lit", "u32", fuzz_u32),
+            StateFieldSpec("matches", "u32", fuzz_u32),
+        ],
+        reference=lambda s: {
+            "bi_buf": 0, "bi_valid": 0,
+            "opt_len": 0, "static_len": 0,
+            "last_lit": 0, "matches": 0,
+        },
+    ),
     "send_bits": StateMutatorBinding(
         name="send_bits",
         state_type="DeflateState",
