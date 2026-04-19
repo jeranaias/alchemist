@@ -1105,7 +1105,16 @@ class TDDGenerator:
             for alg in mod.algorithms:
                 if alg.test_vectors:
                     continue
-                if lookup_test_vectors(alg.name):
+                # Only skip catalog lookup when catalog vectors will
+                # actually be emitted — i.e., the function can consume
+                # a byte-slice input. Scalar-arg functions like
+                # crc32_combine_gen64 match the catalog by name but
+                # can't use the byte-slice tests, so they still need
+                # fuzz-generated vectors.
+                from alchemist.implementer.test_generator import (
+                    _can_accept_byte_slice,
+                )
+                if _can_accept_byte_slice(alg) and lookup_test_vectors(alg.name):
                     continue
                 vectors = fuzz_for_spec(
                     dll, alg, ZLIB_BINDINGS,
