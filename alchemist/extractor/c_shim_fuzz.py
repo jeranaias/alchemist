@@ -280,6 +280,18 @@ ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
             StateFieldSpec("length", "u8", lambda rng: rng.randint(1, 15)),
         ],
     ),
+    "_tr_align": CShimMutatorBinding(
+        name="_tr_align",
+        state_type="DeflateState",
+        runner="shim_run_tr_align",
+        fields=[
+            CShimField("bi_buf", "u16", lambda rng: 0,
+                       set_argtype=ctypes.c_ushort, get_restype=ctypes.c_ushort),
+            CShimField("bi_valid", "i32", lambda rng: 0,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("pending", "Vec<u8>", lambda rng: b"", is_byte_buf=True),
+        ],
+    ),
 }
 
 
