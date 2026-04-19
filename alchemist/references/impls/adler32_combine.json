@@ -1,0 +1,10 @@
+{
+  "algorithm": "adler32_combine",
+  "variant": "rfc1950",
+  "title": "Combine two Adler-32 checksums (RFC 1950 §A.2)",
+  "standards": ["RFC 1950"],
+  "signature": "pub fn adler32_combine(adler1: u32, adler2: u32, len2: u64) -> u32",
+  "license": "Apache-2.0",
+  "notes": "Faithful port of zlib's adler32_combine_. Computes the Adler-32 that would result from concatenating two byte sequences given their individual Adler-32 values and the length of the second sequence. Uses BASE = 65521.",
+  "rust_source": "pub fn adler32_combine(adler1: u32, adler2: u32, len2: u64) -> u32 {\n    const BASE: u32 = 65521;\n    let rem = (len2 % (BASE as u64)) as u32;\n    let mut sum1: u32 = adler1 & 0xffff;\n    let mut sum2: u32 = (rem.wrapping_mul(sum1)) % BASE;\n    sum1 = sum1.wrapping_add((adler2 & 0xffff).wrapping_add(BASE).wrapping_sub(1));\n    sum2 = sum2.wrapping_add(((adler1 >> 16) & 0xffff).wrapping_add((adler2 >> 16) & 0xffff).wrapping_add(BASE).wrapping_sub(rem));\n    if sum1 >= BASE { sum1 -= BASE; }\n    if sum1 >= BASE { sum1 -= BASE; }\n    if sum2 >= BASE.wrapping_mul(2) { sum2 -= BASE.wrapping_mul(2); }\n    if sum2 >= BASE { sum2 -= BASE; }\n    sum1 | (sum2 << 16)\n}"
+}
