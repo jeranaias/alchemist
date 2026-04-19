@@ -68,6 +68,10 @@ class CShimMutatorBinding:
     extra_args: list[StateFieldSpec] = field(default_factory=list)
     # The shim's runner entry point, default shim_run_<name>
     runner: str = ""
+    # Pre-setup: function called with (dll) to set up pinned/constant state
+    # fields before the binding's fields are applied. Use for things like
+    # w_size / hash_size that need to be set but aren't observed.
+    pre_setup: Callable[[ctypes.CDLL], None] = None
 
     def resolved_runner(self) -> str:
         return self.runner or f"shim_run_{self.name}"
@@ -145,6 +149,8 @@ def fuzz_with_shim(
     runner = getattr(dll, binding.resolved_runner())
     for i in range(count):
         dll.shim_reset()
+        if binding.pre_setup is not None:
+            binding.pre_setup(dll)
         pre_values: dict[str, Any] = {}
         for fs in binding.fields:
             v = _fuzzer_for_field(fs, rng)
@@ -278,6 +284,18 @@ ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
         extra_args=[
             StateFieldSpec("value", "u16", fuzz_u16),
             StateFieldSpec("length", "u8", lambda rng: rng.randint(1, 15)),
+        ],
+    ),
+    "slide_hash": CShimMutatorBinding(
+        name="slide_hash",
+        state_type="DeflateState",
+        pre_setup=lambda dll: (
+            dll.shim_set_w_size(ctypes.c_ulong(16)),
+            dll.shim_set_hash_size(ctypes.c_ulong(16)),
+        ),
+        fields=[
+            CShimField("head", "Vec<u16>", _fuzz_u16_vec_fixed16, is_u16_buf=True, max_len=16),
+            CShimField("prev", "Vec<u16>", _fuzz_u16_vec_fixed16, is_u16_buf=True, max_len=16),
         ],
     ),
     "_tr_align": CShimMutatorBinding(
