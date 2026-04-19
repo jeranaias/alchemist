@@ -1,0 +1,10 @@
+{
+  "algorithm": "crc32_ieee",
+  "variant": "zlib_3arg",
+  "title": "zlib's 3-argument CRC-32 public entry (delegates to crc32_z)",
+  "standards": ["RFC 1952", "CRC-32"],
+  "signature": "pub fn crc32(crc: u32, buf: &[u8], len: usize) -> u32",
+  "license": "Apache-2.0",
+  "notes": "zlib's `crc32(crc, buf, len)` is a thin wrapper over `crc32_z(crc, buf, len)`. Both use the reflected IEEE 802.3 polynomial via CRC32_TABLE (precomputed in zlib-types). Honor min(len, buf.len()) for safe indexing.",
+  "rust_source": "pub fn crc32(crc: u32, buf: &[u8], len: usize) -> u32 {\n    let mut c = !crc;\n    let n = len.min(buf.len());\n    for i in 0..n {\n        let idx = (c ^ buf[i] as u32) as u8;\n        c = CRC32_TABLE[idx as usize] ^ (c >> 8);\n    }\n    !c\n}"
+}
