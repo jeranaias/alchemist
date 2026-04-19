@@ -48,6 +48,14 @@ def _slug(s: str) -> str:
     return re.sub(r"_+", "_", s) or "x"
 
 
+_TYPED_INT_LITERAL = re.compile(
+    r"^-?\d+(?:_\d+)*(?:u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|f32|f64)$"
+)
+_PARENTHESIZED_TYPED = re.compile(
+    r"^\(\s*-?\d+(?:_\d+)*(?:u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|f32|f64)\s*\)$"
+)
+
+
 def _literal_from_spec_value(value: str) -> str:
     """Return a Rust literal. Accepts already-valid Rust literals, or falls
     back to wrapping a bare string in quotes."""
@@ -55,6 +63,12 @@ def _literal_from_spec_value(value: str) -> str:
     if v.startswith(("&", "b\"", "b'", "0x", "0b", "\"", "[", "vec!")):
         return v
     if v.replace("_", "").replace(".", "").replace("-", "").isdigit():
+        return v
+    # Typed integer/float literals like `0u64`, `-42i32`, `(-1i8)` are valid Rust.
+    if _TYPED_INT_LITERAL.match(v) or _PARENTHESIZED_TYPED.match(v):
+        return v
+    # Hex literal with suffix like `0xffu64`
+    if re.match(r"^0x[0-9a-fA-F]+(?:_[0-9a-fA-F]+)*(?:u\d+|i\d+|usize|isize)?$", v):
         return v
     # Fallback: treat as byte-string literal
     return f'b"{v}"'
