@@ -1,0 +1,10 @@
+{
+  "algorithm": "adler32_z",
+  "variant": "rfc1950_explicit_len",
+  "title": "Adler-32 checksum with explicit length (RFC 1950, zlib adler32_z variant)",
+  "standards": ["RFC 1950", "Adler-32"],
+  "signature": "pub fn adler32_z(adler: u32, buf: &[u8], len: usize) -> u32",
+  "license": "Apache-2.0",
+  "notes": "zlib's adler32_z takes an explicit length so callers can checksum a prefix of buf without re-slicing. Honor min(len, buf.len()) to remain sound under the no-unsafe policy. Returns the new (seeded) Adler-32 value packed as (s2 << 16) | s1.",
+  "rust_source": "pub fn adler32_z(adler: u32, buf: &[u8], len: usize) -> u32 {\n    const BASE: u32 = 65521;\n    const NMAX: usize = 5552;\n    let mut s1: u32 = adler & 0xFFFF;\n    let mut s2: u32 = (adler >> 16) & 0xFFFF;\n    let n = len.min(buf.len());\n    let mut i: usize = 0;\n    while i < n {\n        let k = core::cmp::min(n - i, NMAX);\n        for j in i..i + k {\n            s1 = s1.wrapping_add(buf[j] as u32);\n            s2 = s2.wrapping_add(s1);\n        }\n        i += k;\n        s1 %= BASE;\n        s2 %= BASE;\n    }\n    (s2 << 16) | s1\n}"
+}
