@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ctypes
 import random
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -182,28 +183,80 @@ def fuzz_pure_reference(
     """Generate vectors via a pure-Python reference implementation.
 
     For functions the C DLL doesn't export (static/inline helpers),
-    define the reference as a Python callable `fn(input_bytes) -> int`
+    define the reference as a Python callable `fn(input_bytes) -> output`
     that faithfully mirrors the C semantics. This still grounds the
     test in a canonical source — just not the DLL.
+
+    Input representation in the emitted test is chosen per-parameter:
+    byte-slice params (`&[u8]`, `Vec<u8>`) get `&[...]` literals; scalar
+    params (u8/u16/u32/u64/i32/usize/...) get typed integer literals.
+    Multi-param scalar functions get inputs packed from the fuzz bytes.
     """
+    import struct
     rng = _rng(seed)
-    inputs = _gen_byte_inputs(rng, count)
+    inputs_raw = _gen_byte_inputs(rng, count)
     vectors: list[SpecTestVector] = []
-    primary = _primary_input_name(alg)
-    for data in inputs:
+    params = alg.inputs or []
+
+    def as_input_dict(data: bytes) -> dict[str, str]:
+        """Render each parameter's value as a Rust literal, consuming bytes in order."""
+        result: dict[str, str] = {}
+        offset = 0
+        for p in params:
+            t = (p.rust_type or "").strip()
+            if "[u8]" in t or "Vec<u8>" in t:
+                result[p.name] = _bytes_to_rust_literal(bytes(data))
+                continue
+            if _re_scalar.fullmatch(t):
+                size = _scalar_size(t)
+                chunk = bytes(data[offset:offset + size].ljust(size, b"\x00"))
+                val = int.from_bytes(chunk, "little")
+                if t.startswith("i") and val & (1 << (size * 8 - 1)):
+                    val -= 1 << (size * 8)
+                result[p.name] = f"{val}{t}" if not t.startswith("i") or val >= 0 else f"({val}{t})"
+                offset += size
+                continue
+            # Fallback — pass as byte slice
+            result[p.name] = _bytes_to_rust_literal(bytes(data))
+        return result
+
+    for data in inputs_raw:
+        # Adapter returns either an int (scalar output) or bytes.
         output = reference(data)
         if isinstance(output, (bytes, bytearray)):
             expected = _bytes_to_rust_literal(bytes(output))
         else:
-            expected = f"0x{int(output):08x}"
+            # Prefer the declared return type for correct suffix.
+            ret = (alg.return_type or "u32").strip()
+            if ret in ("u8", "u16", "u32", "u64", "usize"):
+                expected = f"{int(output)}{ret}"
+            elif ret in ("i8", "i16", "i32", "i64", "isize"):
+                expected = f"{int(output)}{ret}"
+            else:
+                expected = f"0x{int(output):08x}"
         vectors.append(SpecTestVector(
             description=f"fuzz_input_len_{len(data)}",
             source=f"pure Python reference: {alg.name}",
-            inputs={primary: _bytes_to_rust_literal(bytes(data))},
+            inputs=as_input_dict(data),
             expected_output=expected,
             tolerance="exact",
         ))
     return vectors
+
+
+_re_scalar = re.compile(r"^(?:u|i)(?:8|16|32|64|size)$")
+
+
+def _scalar_size(t: str) -> int:
+    if t.endswith("8"):
+        return 1
+    if t.endswith("16"):
+        return 2
+    if t.endswith("32"):
+        return 4
+    if t.endswith("64") or t.endswith("size"):
+        return 8
+    return 4
 
 
 def fuzz_for_spec(
