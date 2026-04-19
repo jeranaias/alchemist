@@ -203,6 +203,10 @@ def _fuzz_byte_buf(rng: random.Random) -> bytes:
     return bytes(rng.randint(0, 255) for _ in range(n))
 
 
+def _fuzz_u16_vec_fixed16(rng: random.Random) -> list[int]:
+    return [rng.randint(0, 0xFFFF) for _ in range(16)]
+
+
 ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
     "bi_flush": CShimMutatorBinding(
         name="bi_flush",
@@ -240,6 +244,40 @@ ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
                        set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
             CShimField("matches", "u32", fuzz_u32,
                        set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
+        ],
+    ),
+    "_tr_init": CShimMutatorBinding(
+        name="_tr_init",
+        state_type="DeflateState",
+        runner="shim_run_tr_init",
+        fields=[
+            CShimField("bi_buf", "u16", fuzz_u16,
+                       set_argtype=ctypes.c_ushort, get_restype=ctypes.c_ushort),
+            CShimField("bi_valid", "i32", fuzz_i32,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("opt_len", "u64", fuzz_u32,
+                       set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
+            CShimField("static_len", "u64", fuzz_u32,
+                       set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
+            CShimField("sym_next", "u32", fuzz_u32,
+                       set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
+            CShimField("matches", "u32", fuzz_u32,
+                       set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
+        ],
+    ),
+    "send_bits": CShimMutatorBinding(
+        name="send_bits",
+        state_type="DeflateState",
+        fields=[
+            CShimField("bi_buf", "u16", fuzz_u16,
+                       set_argtype=ctypes.c_ushort, get_restype=ctypes.c_ushort),
+            CShimField("bi_valid", "i32", lambda rng: rng.randint(0, 15),
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("pending", "Vec<u8>", _fuzz_byte_buf, is_byte_buf=True),
+        ],
+        extra_args=[
+            StateFieldSpec("value", "u16", fuzz_u16),
+            StateFieldSpec("length", "u8", lambda rng: rng.randint(1, 15)),
         ],
     ),
 }
