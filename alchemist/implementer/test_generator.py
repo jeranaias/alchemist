@@ -282,8 +282,62 @@ def _emit_catalog_test_compression(
     )
 
 
+def _emit_state_mutator_test(fn_name: str, vec: SpecTestVector, idx: int) -> str:
+    """Emit a test for a state-mutator function.
+
+    Input dict has keys `state.<field>` (pre-state) and plain names (extra args).
+    Expected output is newline-separated `field:rust_type=value` lines.
+    Test constructs a fresh state with the pre-state values, calls the fn,
+    and asserts each post-state field.
+    """
+    test_name = f"test_{fn_name}_state_{idx}"
+    # Split pre-state fields from extra args
+    state_inits: list[tuple[str, str]] = []
+    extra_args: list[tuple[str, str]] = []
+    for pname, pvalue in vec.inputs.items():
+        if pname.startswith("state."):
+            field_name = pname[len("state."):]
+            state_inits.append((field_name, pvalue))
+        else:
+            extra_args.append((pname, pvalue))
+    lines = [f"    #[test]\n    fn {test_name}() {{\n"]
+    # Need state type — infer from the first expected-output line's context.
+    # For zlib, always DeflateState. For now, use the convention that the
+    # test sits in a module where DeflateState is imported via `use zlib_types::*;`.
+    lines.append("        let mut state = zlib_types::DeflateState::default();\n")
+    for field_name, rendered in state_inits:
+        lines.append(f"        state.{field_name} = {rendered};\n")
+    for arg_name, rendered in extra_args:
+        lines.append(f"        let {arg_name} = {rendered};\n")
+    # Build the call: state is first arg, extras after.
+    if extra_args:
+        extra_str = ", ".join(a[0] for a in extra_args)
+        lines.append(f"        super::{fn_name}(&mut state, {extra_str});\n")
+    else:
+        lines.append(f"        super::{fn_name}(&mut state);\n")
+    # Parse expected fields and emit assertions.
+    for line in vec.expected_output.splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        lhs, rhs = line.split("=", 1)
+        # lhs is "name:rust_type"
+        if ":" not in lhs:
+            continue
+        field_name, _ = lhs.split(":", 1)
+        lines.append(
+            f"        assert_eq!(state.{field_name.strip()}, {rhs.strip()}, "
+            f'"{vec.description} field {field_name.strip()}");\n'
+        )
+    lines.append("    }\n")
+    return "".join(lines)
+
+
 def _emit_spec_test(fn_name: str, vec: SpecTestVector, idx: int) -> str:
     """Emit a test from a spec.test_vectors entry."""
+    # State-mutator vectors use a different test shape
+    if vec.tolerance == "state_mutator":
+        return _emit_state_mutator_test(fn_name, vec, idx)
     test_name = f"test_{fn_name}_spec_{idx}"
     lines = [f"    #[test]\n    fn {test_name}() {{\n"]
     for pname, pvalue in vec.inputs.items():

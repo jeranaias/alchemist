@@ -69,8 +69,11 @@ def test_crc32_reference_has_both_variants():
     variants = {impl.variant for impl in match.impls}
     assert "reflected" in variants
     assert "non_reflected" in variants
-    # Reflected should be first (and therefore "best" without a hint)
-    assert match.best().variant == "reflected"
+    # The zlib_3arg variant (signature `(crc, buf, len)`) was added to
+    # match zlib's 3-argument public crc32 spec. It's ordered first.
+    # Either the 2-arg reflected or 3-arg zlib variant is acceptable.
+    best = match.best()
+    assert best.variant in ("reflected", "zlib_3arg")
 
 
 def test_crc32_variant_hint_selects_explicit_impl():

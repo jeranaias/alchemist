@@ -1099,6 +1099,9 @@ class TDDGenerator:
             from alchemist.extractor.fuzz_vectors import (
                 load_zlib_dll, ZLIB_BINDINGS, ZLIB_PURE_REFERENCES, fuzz_for_spec,
             )
+            from alchemist.extractor.state_mutator import (
+                ZLIB_STATE_MUTATORS, fuzz_state_mutator,
+            )
             dll = load_zlib_dll(dll_path)
         except Exception as e:  # noqa: BLE001
             console.print(f"  [dim]fuzz backfill skipped: {e}[/dim]")
@@ -1107,6 +1110,17 @@ class TDDGenerator:
         for mod in specs:
             for alg in mod.algorithms:
                 if alg.test_vectors:
+                    continue
+                # State-mutator path: if this function has a state-mutator
+                # binding with a Python reference port, generate state
+                # pre/post-state vectors. Covers &mut DeflateState functions
+                # that the scalar fuzz pipeline can't handle.
+                state_binding = ZLIB_STATE_MUTATORS.get(alg.name)
+                if state_binding is not None:
+                    vectors = fuzz_state_mutator(alg, state_binding)
+                    if vectors:
+                        alg.test_vectors = vectors
+                        added += len(vectors)
                     continue
                 # Only skip catalog lookup when catalog vectors will
                 # actually be emitted — i.e., the function can consume
