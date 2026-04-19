@@ -244,6 +244,44 @@ def _bi_windup_ref(s: dict[str, Any]) -> dict[str, Any]:
     return {"bi_buf": 0, "bi_valid": 0, "pending": pending}
 
 
+def _slide_hash_ref(s: dict[str, Any]) -> dict[str, Any]:
+    """Faithful port of zlib deflate.c slide_hash.
+
+    Subtracts wsize from every head[] and prev[] entry, clamping to 0
+    (NIL) on underflow.
+    """
+    wsize = int(s["wsize"])
+    head = list(s["head"])
+    prev = list(s["prev"])
+    new_head = [
+        (h - wsize) if h >= wsize else 0 for h in head
+    ]
+    new_prev = [
+        (p - wsize) if p >= wsize else 0 for p in prev
+    ]
+    return {"wsize": wsize, "head": new_head, "prev": new_prev}
+
+
+def _init_block_ref(s: dict[str, Any]) -> dict[str, Any]:
+    """Faithful port of zlib trees.c init_block.
+
+    Zeroes opt_len/static_len/last_lit/matches and a few counters.
+    For the test, we track these observable fields only.
+    """
+    return {
+        "opt_len": 0,
+        "static_len": 0,
+        "last_lit": 0,
+        "matches": 0,
+    }
+
+
+def _fuzz_small_vec_u16(max_len: int = 8, min_val: int = 0, max_val: int = 0xFFFF):
+    def gen(rng: random.Random) -> list[int]:
+        return [rng.randint(min_val, max_val) for _ in range(max_len)]
+    return gen
+
+
 ZLIB_STATE_MUTATORS: dict[str, StateMutatorBinding] = {
     "bi_flush": StateMutatorBinding(
         name="bi_flush",
@@ -264,5 +302,26 @@ ZLIB_STATE_MUTATORS: dict[str, StateMutatorBinding] = {
             StateFieldSpec("pending", "Vec<u8>", fuzz_small_vec_u8(16)),
         ],
         reference=_bi_windup_ref,
+    ),
+    "slide_hash": StateMutatorBinding(
+        name="slide_hash",
+        state_type="DeflateState",
+        fields_in=[
+            StateFieldSpec("wsize", "u32", lambda rng: rng.choice([1024, 2048, 4096])),
+            StateFieldSpec("head", "Vec<u16>", _fuzz_small_vec_u16(8)),
+            StateFieldSpec("prev", "Vec<u16>", _fuzz_small_vec_u16(8)),
+        ],
+        reference=_slide_hash_ref,
+    ),
+    "init_block": StateMutatorBinding(
+        name="init_block",
+        state_type="DeflateState",
+        fields_in=[
+            StateFieldSpec("opt_len", "u64", fuzz_u32),
+            StateFieldSpec("static_len", "u64", fuzz_u32),
+            StateFieldSpec("last_lit", "u32", fuzz_u32),
+            StateFieldSpec("matches", "u32", fuzz_u32),
+        ],
+        reference=_init_block_ref,
     ),
 }
