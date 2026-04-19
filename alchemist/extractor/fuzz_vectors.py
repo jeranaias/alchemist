@@ -426,36 +426,44 @@ def _bi_reverse_pure_ref(data: bytes) -> int:
 
 
 def _multmodp_pure_ref(data: bytes) -> int:
-    """multmodp(a, b) in GF(2^32) with the zlib CRC polynomial.
+    """multmodp(a, b) — faithful port of zlib's crc32.c implementation.
 
-    Mirrors the C implementation: multiply-and-reduce using the reflected
-    CRC-32 polynomial x^32 = x^26 + x^23 + x^22 + x^16 + x^12 + x^11 +
-    x^10 + x^8 + x^7 + x^5 + x^4 + x^2 + x + 1 (0xEDB88320 reflected).
+    m = 0x80000000
+    p = 0
+    while true:
+        if a & m:
+            p ^= b
+            if (a & (m-1)) == 0: break
+        m >>= 1
+        b = (b >> 1) ^ POLY if b & 1 else b >> 1
+
+    POLY = 0xEDB88320 (reflected IEEE). Requires a != 0 (C spec).
     """
     padded = bytes(data[:8].ljust(8, b"\x00"))
     a = int.from_bytes(padded[0:4], "little")
     b = int.from_bytes(padded[4:8], "little")
-    # multmodp per zlib's crc32.c: p = 0; for each bit of b, p ^= a shifted appropriately
-    p = 0
+    if a == 0:
+        return 0  # zlib says undefined, be defensive
     POLY = 0xEDB88320
-    for i in range(32):
-        if b & 0x80000000:
-            p ^= a
-        b = (b << 1) & 0xFFFFFFFF
-        # Multiply a by x modulo the CRC polynomial
-        if a & 1:
-            a = (a >> 1) ^ POLY
+    m = 1 << 31
+    p = 0
+    while True:
+        if a & m:
+            p ^= b
+            if (a & (m - 1)) == 0:
+                break
+        m >>= 1
+        if b & 1:
+            b = (b >> 1) ^ POLY
         else:
-            a >>= 1
+            b >>= 1
     return p
 
 
 ZLIB_PURE_REFERENCES: dict[str, callable] = {
     "byte_swap": _byte_swap_pure_ref,
     "bi_reverse": _bi_reverse_pure_ref,
-    # multmodp disabled until we verify the reference matches C exactly —
-    # the reflection direction is tricky to get right.
-    # "multmodp": _multmodp_pure_ref,
+    "multmodp": _multmodp_pure_ref,
 }
 
 
