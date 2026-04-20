@@ -265,6 +265,41 @@ def run_implement_stage(
         ModuleSpec.model_validate(json.loads(f.read_text(encoding="utf-8")))
         for f in sorted(specs_dir.glob("*.json"))
     ]
+    # Spec completer: merge orphan per-function specs from
+    # specs/_functions/<module>/*.json into each module's algorithms list.
+    # Spec extraction sometimes produces a function spec but fails to fold
+    # it into the aggregated module, so the architect never sees it and
+    # generated code that references the helper fails to compile.
+    fn_dir = specs_dir / "_functions"
+    if fn_dir.exists():
+        added_total = 0
+        for module in specs:
+            per_fn_dir = fn_dir / module.name
+            if not per_fn_dir.exists():
+                continue
+            present = {a.name for a in module.algorithms or []}
+            new_algs = list(module.algorithms or [])
+            for fn_json in sorted(per_fn_dir.glob("*.json")):
+                data = json.loads(fn_json.read_text(encoding="utf-8"))
+                name = data.get("name") or ""
+                if not name or name in present:
+                    continue
+                data.setdefault("display_name", name)
+                data.setdefault("description",
+                                data.get("purpose") or data.get("algorithm_notes") or name)
+                try:
+                    from alchemist.extractor.schemas import AlgorithmSpec
+                    new_algs.append(AlgorithmSpec.model_validate(data))
+                    present.add(name)
+                    added_total += 1
+                except Exception:
+                    continue
+            if len(new_algs) != len(module.algorithms or []):
+                module.algorithms = new_algs
+        if added_total:
+            console.print(
+                f"[cyan]spec completer: merged {added_total} orphan function spec(s)[/cyan]"
+            )
     # Normalize parameter types before generation. Fixes classes of extractor
     # drift (Vec<u8> output buffers → &mut [u8], u64 length pointers → &mut usize).
     from alchemist.extractor.normalizer import normalize_all
