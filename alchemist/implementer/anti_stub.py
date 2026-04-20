@@ -58,6 +58,16 @@ STUB_COMMENT_PHRASES: list[tuple[str, re.Pattern[str]]] = [
         r"not\s+(?:yet\s+)?implemented", re.IGNORECASE)),
     ("comment_auto_stub", re.compile(
         r"auto-?generated\s+stub", re.IGNORECASE)),
+    # LLM likes to write "// ... (rest of X)" or "// ... rest ..." to
+    # elide long tables (CRC32_TABLE, static Huffman trees, etc.). That
+    # leaves a malformed collection literal that won't compile.
+    ("comment_rest_elided", re.compile(
+        r"//\s*\.\.\.\s*(?:\(rest|rest\s+of|remaining|etc\.?|and\s+so\s+on)",
+        re.IGNORECASE)),
+    # Related: "// ... X more entries" is a table-truncation marker.
+    ("comment_n_more_entries", re.compile(
+        r"//\s*\.\.\.\s*\d*\s*(?:more|remaining)\s+(?:entries|elements|values|items)",
+        re.IGNORECASE)),
 ]
 
 
