@@ -73,6 +73,7 @@ def check_workspace_regression(
                 ["cargo", "check"],
                 cwd=str(crate_dir),
                 capture_output=True, text=True, timeout=check_timeout,
+                encoding="utf-8", errors="replace",
             )
             rr.compile_ok = chk.returncode == 0
             if not rr.compile_ok:
@@ -90,6 +91,7 @@ def check_workspace_regression(
                 ["cargo", "test", "--no-fail-fast"],
                 cwd=str(crate_dir),
                 capture_output=True, text=True, timeout=test_timeout,
+                encoding="utf-8", errors="replace",
             )
             rr.tests_ok = tst.returncode == 0
             if not rr.tests_ok:

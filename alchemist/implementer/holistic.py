@@ -56,24 +56,41 @@ class HolisticResult:
     final_stderr: str = ""
 
 
+def _is_link_lock(stderr: str) -> bool:
+    s = stderr or ""
+    return "LNK1104" in s or "cannot open file" in s
+
+
 def cargo_check(crate_dir: Path, timeout: int = 180) -> tuple[bool, str]:
-    r = subprocess.run(
-        ["cargo", "check"], cwd=str(crate_dir),
-        capture_output=True, text=True, timeout=timeout,
-    )
-    return r.returncode == 0, r.stderr
+    import time
+    for attempt in range(3):
+        r = subprocess.run(
+            ["cargo", "check"], cwd=str(crate_dir),
+            capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+        if r.returncode == 0 or not _is_link_lock(r.stderr):
+            return r.returncode == 0, r.stderr or ""
+        time.sleep(0.5 * (3 ** attempt))
+    return False, r.stderr or ""
 
 
 def cargo_test(crate_dir: Path, filter: str | None = None, timeout: int = 300) -> tuple[bool, str, str]:
+    import time
     cmd = ["cargo", "test"]
     if filter:
         cmd.append(filter)
     cmd.extend(["--", "--nocapture"])
-    r = subprocess.run(
-        cmd, cwd=str(crate_dir),
-        capture_output=True, text=True, timeout=timeout,
-    )
-    return r.returncode == 0, r.stdout, r.stderr
+    for attempt in range(3):
+        r = subprocess.run(
+            cmd, cwd=str(crate_dir),
+            capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+        if r.returncode == 0 or not _is_link_lock(r.stderr):
+            return r.returncode == 0, r.stdout or "", r.stderr or ""
+        time.sleep(0.5 * (3 ** attempt))
+    return False, r.stdout or "", r.stderr or ""
 
 
 def build_crate_context(crate_dir: Path, max_chars: int = 40_000) -> str:

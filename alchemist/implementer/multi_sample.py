@@ -168,6 +168,7 @@ def make_cargo_evaluator(
                 ["cargo", "check"],
                 cwd=str(crate_dir),
                 capture_output=True, text=True, timeout=check_timeout,
+                encoding="utf-8", errors="replace",
             )
         except Exception as e:  # noqa: BLE001
             return False, 0, 0, str(e)[:500]
@@ -178,6 +179,7 @@ def make_cargo_evaluator(
                 ["cargo", "test", test_filter, "--", "--nocapture"],
                 cwd=str(crate_dir),
                 capture_output=True, text=True, timeout=test_timeout,
+                encoding="utf-8", errors="replace",
             )
         except Exception as e:  # noqa: BLE001
             return True, 0, 0, str(e)[:500]

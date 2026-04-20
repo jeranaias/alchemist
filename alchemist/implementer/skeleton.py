@@ -688,17 +688,29 @@ def _topo_sort(arch: CrateArchitecture) -> list[str]:
 
 
 def _run_cargo_check(path: Path, timeout: int = 180) -> tuple[bool, str]:
-    try:
-        r = subprocess.run(
-            ["cargo", "check"],
-            cwd=str(path),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return r.returncode == 0, r.stderr
-    except Exception as e:
-        return False, f"cargo check failed to run: {e}"
+    import time
+    last_stderr = ""
+    for attempt in range(3):
+        try:
+            r = subprocess.run(
+                ["cargo", "check"],
+                cwd=str(path),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                encoding="utf-8", errors="replace",
+            )
+        except Exception as e:
+            return False, f"cargo check failed to run: {e}"
+        if r.returncode == 0:
+            return True, r.stderr or ""
+        stderr = r.stderr or ""
+        last_stderr = stderr
+        # Retry on Windows linker file-lock (LNK1104). Not a real failure.
+        if "LNK1104" not in stderr and "cannot open file" not in stderr:
+            return False, stderr
+        time.sleep(0.5 * (3 ** attempt))
+    return False, last_stderr
 
 
 def _top_errors(stderr: str, n: int = 3) -> str:

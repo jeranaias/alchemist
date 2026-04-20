@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -548,7 +549,7 @@ class TDDGenerator:
             previous_failure = (
                 f"## Previous iteration compiled but FAILED tests.\n\n"
                 f"You wrote:\n```rust\n{new_fn[:2500]}\n```\n\n"
-                f"Test output:\n```\n{_top_lines(tout + chr(10) + terr, 40)}\n```\n\n"
+                f"Test output:\n```\n{_top_lines((tout or '') + chr(10) + (terr or ''), 40)}\n```\n\n"
                 f"The code compiles but produces wrong output. Check the "
                 f"expected values in the test and fix the algorithm logic. "
                 f"Most likely causes: off-by-one, wrong initial state, "
@@ -1256,35 +1257,91 @@ def _run_cargo_all_targets(path: Path, timeout: int = 300) -> tuple[bool, str]:
             ["cargo", "check", "--all-targets"],
             cwd=str(path),
             capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
         )
         return r.returncode == 0, r.stderr
     except Exception as e:
         return False, str(e)
 
 
-def _run_cargo_test(path: Path, timeout: int = 600) -> tuple[bool, str, str]:
+def _is_windows_link_lock(stderr: str) -> bool:
+    """LNK1104 on Windows means the linker couldn't open a target .exe
+    because another process (antivirus, still-exiting test binary) has
+    a file lock. Not a real test failure — retry after a brief pause."""
+    return "LNK1104" in (stderr or "") or "cannot open file" in (stderr or "")
+
+
+def _kill_target_zombies(workspace_dir: Path) -> int:
+    """Kill any running process whose image lives under workspace_dir/target/.
+
+    libtest can leave worker-process orphans when a cargo test is killed
+    or times out. Those orphans hold file locks on the test .exe, causing
+    LNK1104 on the next re-link. Proactive kill before each cargo run.
+    Only implemented on Windows where this is a real issue.
+    """
+    if not sys.platform.startswith("win"):
+        return 0
     try:
-        r = subprocess.run(
-            ["cargo", "test", "--workspace", "--no-fail-fast"],
-            cwd=str(path),
-            capture_output=True, text=True, timeout=timeout,
-        )
-        return r.returncode == 0, r.stdout, r.stderr
-    except Exception as e:
-        return False, "", str(e)
+        target = (workspace_dir / "target").resolve()
+    except Exception:
+        return 0
+    target_prefix = str(target).lower()
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return 0
+    killed = 0
+    for p in psutil.process_iter(["pid", "exe"]):
+        try:
+            exe = (p.info.get("exe") or "").lower()
+            if exe.startswith(target_prefix):
+                p.kill()
+                killed += 1
+        except Exception:
+            pass
+    return killed
+
+
+def _cargo_with_link_retry(argv: list[str], path: Path, timeout: int,
+                           max_retries: int = 3) -> tuple[int, str, str]:
+    """Run a cargo command with Windows LNK1104 retry-with-backoff.
+
+    Before each attempt, proactively kills any lingering test-binary
+    zombies from prior runs that would hold file locks.
+    """
+    import time
+    last = (1, "", "")
+    for attempt in range(max_retries):
+        _kill_target_zombies(path)
+        try:
+            r = subprocess.run(
+                argv, cwd=str(path),
+                capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
+            )
+        except Exception as e:
+            return 1, "", str(e)
+        if r.returncode == 0 or not _is_windows_link_lock(r.stderr):
+            return r.returncode, r.stdout, r.stderr
+        # Transient link lock; back off 0.5s, 1.5s, 3.0s
+        time.sleep(0.5 * (3 ** attempt))
+        last = (r.returncode, r.stdout, r.stderr)
+    return last
+
+
+def _run_cargo_test(path: Path, timeout: int = 600) -> tuple[bool, str, str]:
+    rc, stdout, stderr = _cargo_with_link_retry(
+        ["cargo", "test", "--workspace", "--no-fail-fast"], path, timeout,
+    )
+    return rc == 0, stdout, stderr
 
 
 def _run_cargo_test_filter(path: Path, test_filter: str, timeout: int = 300) -> tuple[bool, str, str]:
-    try:
-        r = subprocess.run(
-            ["cargo", "test", test_filter, "--", "--nocapture"],
-            cwd=str(path),
-            capture_output=True, text=True, timeout=timeout,
-        )
-        return r.returncode == 0, r.stdout, r.stderr
-    except Exception as e:
-        return False, "", str(e)
+    rc, stdout, stderr = _cargo_with_link_retry(
+        ["cargo", "test", test_filter, "--", "--nocapture"], path, timeout,
+    )
+    return rc == 0, stdout, stderr
 
 
 def _top_lines(text: str, n: int) -> str:
-    return "\n".join(text.splitlines()[:n])
+    return "\n".join((text or "").splitlines()[:n])
