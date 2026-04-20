@@ -289,6 +289,37 @@ class TDDGenerator:
 
     # --- Phase C helpers ---
 
+    def _wins_cache_path(
+        self, workspace_dir: Path, crate: str, module: str, fn_name: str,
+    ) -> Path:
+        # Stored alongside output, not under output/, so a target/ clean
+        # doesn't wipe accumulated progress. Path is stable across runs.
+        return (
+            workspace_dir.parent / "wins" / crate / module / f"{fn_name}.rs"
+        )
+
+    def _load_cached_win(
+        self, workspace_dir: Path, crate: str, module: str, fn_name: str,
+    ) -> str | None:
+        p = self._wins_cache_path(workspace_dir, crate, module, fn_name)
+        if p.exists():
+            try:
+                return p.read_text(encoding="utf-8")
+            except Exception:
+                return None
+        return None
+
+    def _save_cached_win(
+        self, workspace_dir: Path, crate: str, module: str, fn_name: str,
+        fn_body: str,
+    ) -> None:
+        p = self._wins_cache_path(workspace_dir, crate, module, fn_name)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(fn_body, encoding="utf-8")
+        except Exception:
+            pass
+
     def _fill_in_function(
         self,
         alg: AlgorithmSpec,
@@ -306,6 +337,40 @@ class TDDGenerator:
         if not module_path.exists():
             attempt.last_error = f"module file missing: {module_path}"
             return attempt
+
+        # Wins cache fast-path: if a prior run got this function passing,
+        # try that impl first. If it still compiles + tests pass under the
+        # current skeleton/spec, take the win with zero LLM calls. Honest
+        # because the test suite still runs and verifies correctness.
+        cached_win = self._load_cached_win(
+            workspace_dir, crate_spec.name, module.name, alg.name,
+        )
+        if cached_win:
+            current = module_path.read_text(encoding="utf-8")
+            replaced = self._replace_fn_in_source(current, alg.name, cached_win)
+            if replaced:
+                module_path.write_text(replaced, encoding="utf-8")
+                ok_compile, _ = _run_cargo_check(crate_dir, timeout=180)
+                if ok_compile:
+                    test_name_prefix = f"test_{alg.name}_"
+                    ok_test, tout, terr = _run_cargo_test_filter(
+                        crate_dir, test_name_prefix,
+                    )
+                    combined = (tout or "") + "\n" + (terr or "")
+                    import re as _re
+                    ran_counts = [int(m) for m in _re.findall(
+                        r"running\s+(\d+)\s+tests?", combined
+                    )]
+                    if ok_test and any(n > 0 for n in ran_counts):
+                        attempt.iterations = 0
+                        attempt.final_compiled = True
+                        attempt.tests_passed = True
+                        console.print(
+                            f"  [green]{alg.name}: cached win restored (0 LLM calls)[/green]"
+                        )
+                        return attempt
+                # Cached win didn't hold — revert and fall through to iteration
+                module_path.write_text(current, encoding="utf-8")
 
         # Short-circuit: if the function has no verifiable test vectors
         # upfront, skip iteration entirely. Iterating would burn LLM calls
@@ -357,6 +422,10 @@ class TDDGenerator:
                         attempt.iterations = 0
                         attempt.final_compiled = True
                         attempt.tests_passed = True
+                        self._save_cached_win(
+                            workspace_dir, crate_spec.name, module.name,
+                            alg.name, template_code,
+                        )
                         console.print(
                             f"  [green]{alg.name}: init template + tests pass[/green]"
                         )
@@ -408,6 +477,17 @@ class TDDGenerator:
                 ):
                     attempt.final_compiled = True
                     attempt.tests_passed = True
+                    # Snapshot the winning function body from the module file.
+                    try:
+                        final_src = module_path.read_text(encoding="utf-8")
+                        final_body = self._extract_fn_body(final_src, alg.name)
+                        if final_body:
+                            self._save_cached_win(
+                                workspace_dir, crate_spec.name, module.name,
+                                alg.name, final_body,
+                            )
+                    except Exception:
+                        pass
                     console.print(
                         f"  [green]{alg.name}: multi-sample win on iter {iteration} "
                         f"(candidate #{ms.best.candidate_idx})[/green]"
@@ -521,6 +601,13 @@ class TDDGenerator:
             had_real_tests = any(n > 0 for n in ran_counts)
             if ok_test and had_real_tests:
                 attempt.tests_passed = True
+                # Persist the winning body so the next run skips iteration
+                # for this function (huge accumulation effect across runs).
+                if new_fn:
+                    self._save_cached_win(
+                        workspace_dir, crate_spec.name, module.name,
+                        alg.name, new_fn,
+                    )
                 console.print(f"  [green]{alg.name}: tests pass on iter {iteration}[/green]")
                 return attempt
 
