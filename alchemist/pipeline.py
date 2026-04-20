@@ -273,6 +273,23 @@ def run_implement_stage(
         console.print(
             f"[cyan]spec normalizer: rewrote {len(norm_notes)} parameter(s)[/cyan]"
         )
+    # Spec auditor: cross-check specs against the actual C source signatures.
+    # Catches extractor-level errors (wrong state type, missing mutability)
+    # that the normalizer's pattern rules don't reach. Auto-fixes safe cases.
+    from alchemist.extractor.spec_auditor import (
+        audit_all as audit_specs, apply_auto_fixes,
+    )
+    audit_report = audit_specs(specs, source)
+    if audit_report.findings:
+        console.print(
+            f"[cyan]spec auditor: {audit_report.summary()}[/cyan]"
+        )
+        fixable = [f for f in audit_report.findings if f.auto_fix]
+        if fixable:
+            specs = apply_auto_fixes(specs, audit_report)
+            console.print(
+                f"[cyan]spec auditor: auto-fixed {len(fixable)} finding(s)[/cyan]"
+            )
     arch = CrateArchitecture.model_validate(
         json.loads(arch_path.read_text(encoding="utf-8"))
     )

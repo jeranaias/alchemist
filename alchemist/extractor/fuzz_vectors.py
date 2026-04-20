@@ -467,6 +467,175 @@ ZLIB_PURE_REFERENCES: dict[str, callable] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Byte-buffer transformation fuzzing.
+#
+# Functions like zmemcpy / zmemcmp / zmemzero don't fit the scalar-input,
+# scalar-output contract of fuzz_pure_reference. They take mutable slice
+# args and either mutate them in place (void return) or return an int
+# derived from comparing two slices.
+#
+# The reference callable returns a dict describing how the Rust test should
+# be rendered:
+#   {
+#       "inputs": {<param_name>: <rust_literal_str>, ...},
+#       "expected_output": <rust_literal_str>,   # what `got`/buffer equals
+#       "assert_kind": "scalar" | "buffer_postcondition",
+#       "mut_buffer": <param_name>,              # only for buffer_postcondition
+#       "n_param": <param_name>,                 # only for buffer_postcondition
+#   }
+#
+# The test generator reads the `tolerance="byte_transform"` marker and
+# dispatches to _emit_byte_transform_test, which knows how to turn that
+# description into a real #[test].
+# ---------------------------------------------------------------------------
+
+
+def _zmemcpy_pure_ref(src: bytes, n: int) -> bytes:
+    """zmemcpy(dst, src, n): copies n bytes from src into dst. Post-state
+    of dst[..n] equals src[..n]. Bytes beyond n must remain at their prior
+    value; the test uses a zero-init dst so the tail stays 0.
+    """
+    return bytes(src[:n])
+
+
+def _zmemcmp_pure_ref(s1: bytes, s2: bytes, n: int) -> int:
+    """Signed difference at first differing byte, 0 if all match."""
+    for i in range(n):
+        if s1[i] != s2[i]:
+            return int(s1[i]) - int(s2[i])
+    return 0
+
+
+def _byte_transform_inputs(rng: random.Random, count: int) -> list[dict]:
+    """Build the raw fuzz-parameter tuples for each zmem* call.
+
+    We produce a shared schedule (src, s2, n, pad) so all three functions
+    exercise matching edge cases (n=0, aligned, misaligned, tail-bytes).
+    """
+    out: list[dict] = []
+    # Edge n values
+    edge_ns = [0, 1, 7, 16, 31]
+    for n in edge_ns:
+        src = bytes(rng.randint(0, 255) for _ in range(max(n, 1)))
+        s2 = bytes(rng.randint(0, 255) for _ in range(max(n, 1)))
+        out.append({"src": src, "s2": s2, "n": n})
+    # Equal-buffer cases for zmemcmp (ensure the 0-return branch fires)
+    for _ in range(3):
+        n = rng.randint(0, 24)
+        buf = bytes(rng.randint(0, 255) for _ in range(max(n, 1)))
+        out.append({"src": buf, "s2": buf, "n": n})
+    # Random cases
+    while len(out) < count:
+        n = rng.randint(0, 32)
+        src = bytes(rng.randint(0, 255) for _ in range(max(n + 4, 1)))
+        s2 = bytes(rng.randint(0, 255) for _ in range(max(n + 4, 1)))
+        out.append({"src": src[:max(n, 1)], "s2": s2[:max(n, 1)], "n": n})
+    return out[:count]
+
+
+def _fuzz_zmemcpy(params: dict) -> dict:
+    src = params["src"]
+    n = params["n"]
+    # Pad src so src.len() >= n always.
+    src_padded = src.ljust(n, b"\x00")
+    expected = _zmemcpy_pure_ref(src_padded, n)
+    return {
+        "inputs": {
+            # `dst` is rendered as a `vec![0u8; N]` expression. The emit
+            # helper turns this into `let mut dst = vec![0u8; N];`.
+            "dst": f"__VECZERO__{n}",
+            "src": _bytes_to_rust_literal(bytes(src_padded)),
+            "n": f"{n}usize",
+        },
+        "expected_output": _bytes_to_rust_literal(bytes(expected)),
+        "assert_kind": "buffer_postcondition",
+        "mut_buffer": "dst",
+        "n_param": "n",
+    }
+
+
+def _fuzz_zmemcmp(params: dict) -> dict:
+    s1 = params["src"]
+    s2 = params["s2"]
+    n = params["n"]
+    s1p = s1.ljust(n, b"\x00")
+    s2p = s2.ljust(n, b"\x00")
+    got = _zmemcmp_pure_ref(s1p, s2p, n)
+    # Normalize to signed i32; zlib's C returns first-byte signed diff, not
+    # clamped to {-1,0,1}. Mirror that exactly.
+    return {
+        "inputs": {
+            "s1": _bytes_to_rust_literal(bytes(s1p)),
+            "s2": _bytes_to_rust_literal(bytes(s2p)),
+            "n": f"{n}usize",
+        },
+        "expected_output": f"({got}i32)" if got < 0 else f"{got}i32",
+        "assert_kind": "scalar",
+    }
+
+
+def _fuzz_zmemzero(params: dict) -> dict:
+    n = params["n"]
+    expected = bytes(n)  # len = n, all 0
+    return {
+        "inputs": {
+            "buffer": f"__VECFILL_FF__{n}",
+            "len": f"{n}usize",
+        },
+        "expected_output": _bytes_to_rust_literal(expected),
+        "assert_kind": "buffer_postcondition",
+        "mut_buffer": "buffer",
+        "n_param": "len",
+    }
+
+
+# Registry of byte-buffer-transformation fn -> ref callable.
+ZLIB_BYTE_TRANSFORMS: dict[str, callable] = {
+    "zmemcpy": _fuzz_zmemcpy,
+    "zmemcmp": _fuzz_zmemcmp,
+    "zmemzero": _fuzz_zmemzero,
+}
+
+
+def fuzz_byte_transform(
+    alg: AlgorithmSpec,
+    reference,
+    *,
+    count: int = 12,
+    seed: int = _FUZZ_SEED,
+) -> list[SpecTestVector]:
+    """Generate vectors for byte-buffer-transformation functions.
+
+    The `reference` callable receives a dict of raw fuzz params and returns
+    a descriptor (see module docstring) with `inputs` already rendered as
+    Rust literals plus `expected_output`, `assert_kind`, and optional
+    `mut_buffer`/`n_param` keys. The assertion kind is threaded through the
+    SpecTestVector via a magic prefix so the test generator can route to
+    the right emit function without schema changes.
+    """
+    rng = _rng(seed)
+    raw_params = _byte_transform_inputs(rng, count)
+    vectors: list[SpecTestVector] = []
+    for i, params in enumerate(raw_params):
+        desc = reference(params)
+        # Encode assert_kind + mut_buffer + n_param into the tolerance
+        # field. Format: "byte_transform|<kind>|<mut_buffer>|<n_param>".
+        # Absent fields use the empty string.
+        kind = desc.get("assert_kind", "scalar")
+        mut_buf = desc.get("mut_buffer", "")
+        n_param = desc.get("n_param", "")
+        tolerance = f"byte_transform|{kind}|{mut_buf}|{n_param}"
+        vectors.append(SpecTestVector(
+            description=f"fuzz_byte_xform_{i}_n{params.get('n')}",
+            source=f"pure Python reference: {alg.name}",
+            inputs=desc["inputs"],
+            expected_output=desc["expected_output"],
+            tolerance=tolerance,
+        ))
+    return vectors
+
+
 def load_zlib_dll(dll_path: Path) -> ctypes.CDLL:
     """Load the zlib shared library from the given path."""
     return ctypes.CDLL(str(dll_path))

@@ -101,6 +101,29 @@ class CShimMutatorBinding:
         return self.runner or f"shim_run_{self.name}"
 
 
+@dataclass
+class CShimObserverBinding:
+    """Binds a state-observer fn (reads state, returns scalar) to its shim.
+
+    Distinct from CShimMutatorBinding: observers don't modify state, they
+    inspect it. The vector records (pre_state_fields -> return_value) so
+    the Rust test sets up a DeflateState, calls the fn, and asserts the
+    scalar return equals the C oracle's value.
+    """
+    name: str
+    state_type: str
+    # State fields to fuzz and pre-set before calling the fn.
+    fields: list[CShimField]
+    # Runner signature: fn(state) -> scalar. Shim's runner is expected
+    # to internally call the real C fn with g_state and return the value.
+    return_restype: Any = ctypes.c_int
+    return_rust_type: str = "i32"
+    runner: str = ""
+
+    def resolved_runner(self) -> str:
+        return self.runner or f"shim_run_{self.name}"
+
+
 def _load_shim(dll_path: Path) -> ctypes.CDLL:
     return ctypes.CDLL(str(dll_path))
 
@@ -171,11 +194,18 @@ def fuzz_pure_shim(
     for i in range(count):
         values: dict[str, Any] = {}
         call_args: list[Any] = []
-        for arg in binding.args:
+        for idx, arg in enumerate(binding.args):
             v = arg.fuzzer(rng) if arg.fuzzer else 0
             values[arg.name] = v
-            # Build ctypes arg matching declared rust_type
-            call_args.append(_rust_to_ctypes(v, arg.rust_type))
+            # Use the binding's declared ctypes argtype — this is the
+            # shim's actual signature. Rust-side rendering (via
+            # arg.rust_type) stays independent so the Rust test can use
+            # the idiomatic Rust parameter type (e.g., u8) while the
+            # shim's C ABI takes a promoted int.
+            if idx < len(binding.argtypes):
+                call_args.append(binding.argtypes[idx](v))
+            else:
+                call_args.append(_rust_to_ctypes(v, arg.rust_type))
         ret = runner(*call_args)
         if hasattr(ret, "value"):
             ret = ret.value
@@ -280,6 +310,49 @@ def fuzz_with_shim(
     return vectors
 
 
+def fuzz_observer_shim(
+    dll: ctypes.CDLL,
+    alg: AlgorithmSpec,
+    binding: CShimObserverBinding,
+    *,
+    count: int = 8,
+    seed: int = 0x41_4C_43_48,
+) -> list[SpecTestVector]:
+    """Generate (pre_state -> return value) vectors for state-observer fns.
+
+    Observer functions read the state without mutating it and return a
+    scalar. Example: `detect_data_type(deflate_state*) -> int`.
+    """
+    rng = random.Random(seed)
+    vectors: list[SpecTestVector] = []
+    runner = getattr(dll, binding.resolved_runner())
+    runner.restype = binding.return_restype
+    for i in range(count):
+        dll.shim_reset()
+        pre_values: dict[str, Any] = {}
+        for fs in binding.fields:
+            v = _fuzzer_for_field(fs, rng)
+            pre_values[fs.name] = v
+            _set_field(dll, fs, v)
+        ret = runner()
+        if hasattr(ret, "value"):
+            ret = ret.value
+        rendered_inputs: dict[str, str] = {}
+        for fs in binding.fields:
+            rendered_inputs[f"state.{fs.name}"] = _render_value(
+                pre_values[fs.name], fs.rust_type,
+            )
+        expected = _render_value(int(ret), binding.return_rust_type)
+        vectors.append(SpecTestVector(
+            description=f"c_shim_observer_{i}",
+            source=f"C reference via shim: {binding.resolved_runner()}",
+            inputs=rendered_inputs,
+            expected_output=expected,
+            tolerance="state_observer",
+        ))
+    return vectors
+
+
 # ---------------------------------------------------------------------------
 # Zlib shim bindings
 # ---------------------------------------------------------------------------
@@ -303,6 +376,38 @@ ZLIB_SHIM_PURE_BINDINGS: dict[str, CShimPureBinding] = {
         argtypes=[ctypes.c_uint, ctypes.c_int],
         restype=ctypes.c_uint,
         return_rust_type="u32",
+    ),
+}
+
+
+def _fuzz_dyn_ltree_freq(rng: random.Random) -> list[int]:
+    # Fill a representative slice of the dynamic literal tree's Freq field.
+    # detect_data_type scans [0..31] as binary-heavy and [33..LITERALS-1] as
+    # text-heavy. 128 entries is enough to exercise both branches.
+    return [rng.randint(0, 255) for _ in range(128)]
+
+
+ZLIB_SHIM_OBSERVER_BINDINGS: dict[str, CShimObserverBinding] = {
+    "detect_data_type": CShimObserverBinding(
+        name="detect_data_type",
+        state_type="DeflateState",
+        runner="shim_run_detect_data_type_ret",
+        fields=[
+            # dyn_ltree[i].Freq is the only state this function inspects.
+            # The shim exposes shim_set_dyn_ltree_freq which takes (ptr, n).
+            CShimField(
+                "dyn_ltree_freq",
+                "Vec<u16>",
+                _fuzz_dyn_ltree_freq,
+                setter="shim_set_dyn_ltree_freq",
+                # No getter — observer doesn't read post-state.
+                getter="shim_set_dyn_ltree_freq",
+                is_u16_buf=True,
+                max_len=128,
+            ),
+        ],
+        return_restype=ctypes.c_int,
+        return_rust_type="i32",
     ),
 }
 
@@ -340,7 +445,14 @@ ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
                        set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
             CShimField("static_len", "u64", fuzz_u32,
                        set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
-            CShimField("sym_next", "u32", fuzz_u32,
+            # NOTE: newer zlib renamed `last_lit` to `sym_next`. Our specs
+            # were extracted when the name was `last_lit`, so the Rust type
+            # uses `last_lit`. The shim exposes setter/getter under
+            # shim_set_sym_next name but writes to the state field — we
+            # map the Rust field name via setter/getter overrides.
+            CShimField("last_lit", "u32", fuzz_u32,
+                       setter="shim_set_sym_next",
+                       getter="shim_get_sym_next",
                        set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
             CShimField("matches", "u32", fuzz_u32,
                        set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
@@ -359,7 +471,11 @@ ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
                        set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
             CShimField("static_len", "u64", fuzz_u32,
                        set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
-            CShimField("sym_next", "u32", fuzz_u32,
+            # Rust field is `last_lit` (see DeflateState in zlib-types);
+            # shim exposes the field under shim_*_sym_next name.
+            CShimField("last_lit", "u32", fuzz_u32,
+                       setter="shim_set_sym_next",
+                       getter="shim_get_sym_next",
                        set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
             CShimField("matches", "u32", fuzz_u32,
                        set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),

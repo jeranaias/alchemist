@@ -507,7 +507,7 @@ class TDDGenerator:
             ok_test, tout, terr = _run_cargo_test_filter(
                 crate_dir, test_name_prefix,
             )
-            combined = tout + "\n" + terr
+            combined = (tout or "") + "\n" + (terr or "")
             # Cargo returns exit 0 even when ZERO tests matched the filter.
             # Detect that case explicitly: if the output shows "0 passed; 0
             # failed" WITHOUT any "running N tests" line reporting N>0, then
@@ -1136,6 +1136,7 @@ class TDDGenerator:
         try:
             from alchemist.extractor.fuzz_vectors import (
                 load_zlib_dll, ZLIB_BINDINGS, ZLIB_PURE_REFERENCES, fuzz_for_spec,
+                ZLIB_BYTE_TRANSFORMS, fuzz_byte_transform,
             )
             from alchemist.extractor.state_mutator import (
                 ZLIB_STATE_MUTATORS, fuzz_state_mutator,
@@ -1171,6 +1172,18 @@ class TDDGenerator:
                 if shim_dll is not None and alg.name in ZLIB_SHIM_BINDINGS:
                     vectors = fuzz_with_shim(
                         shim_dll, alg, ZLIB_SHIM_BINDINGS[alg.name],
+                    )
+                    if vectors:
+                        alg.test_vectors = vectors
+                        added += len(vectors)
+                    continue
+                # Byte-buffer transformation path — fn mutates a slice
+                # argument or compares two slices. Runs BEFORE the generic
+                # pure-reference/catalog paths so zmem* don't fall into
+                # the scalar-only fuzz_for_spec codepath that skips them.
+                if alg.name in ZLIB_BYTE_TRANSFORMS:
+                    vectors = fuzz_byte_transform(
+                        alg, ZLIB_BYTE_TRANSFORMS[alg.name],
                     )
                     if vectors:
                         alg.test_vectors = vectors

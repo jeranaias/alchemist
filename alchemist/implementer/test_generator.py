@@ -21,6 +21,7 @@ from pathlib import Path
 
 from alchemist.architect.schemas import CrateArchitecture, CrateSpec
 from alchemist.extractor.schemas import AlgorithmSpec, ModuleSpec, TestVector as SpecTestVector
+from alchemist.implementer.skeleton import _snake as _rust_fn_name
 from alchemist.standards import TestVector as StdTestVector, lookup_test_vectors
 
 
@@ -333,11 +334,69 @@ def _emit_state_mutator_test(fn_name: str, vec: SpecTestVector, idx: int) -> str
     return "".join(lines)
 
 
+def _emit_byte_transform_test(
+    fn_name: str, vec: SpecTestVector, idx: int,
+) -> str:
+    """Emit a test for a byte-buffer-transformation fn (zmemcpy/zmemcmp/zmemzero).
+
+    Tolerance field encodes the assertion kind and which parameter is the
+    mutable buffer: "byte_transform|<kind>|<mut_buf>|<n_param>".
+
+    Input values using magic prefixes:
+      __VECZERO__<N>       -> vec![0u8; N]
+      __VECFILL_FF__<N>    -> vec![0xFFu8; N]   (non-zero seed for zmemzero)
+
+    For buffer_postcondition: asserts `&mut_buf[..n]` equals expected bytes.
+    For scalar: asserts return value equals expected (existing literal path).
+    """
+    parts = (vec.tolerance or "").split("|")
+    _, kind, mut_buf, n_param = (parts + ["", "", ""])[:4]
+    test_name = f"test_{fn_name}_xform_{idx}"
+    lines = [f"    #[test]\n    fn {test_name}() {{\n"]
+    for pname, pvalue in vec.inputs.items():
+        v = pvalue.strip()
+        if v.startswith("__VECZERO__"):
+            n_literal = v[len("__VECZERO__"):]
+            lines.append(f"        let mut {pname}: alloc::vec::Vec<u8> = alloc::vec![0u8; {n_literal}];\n")
+        elif v.startswith("__VECFILL_FF__"):
+            n_literal = v[len("__VECFILL_FF__"):]
+            lines.append(f"        let mut {pname}: alloc::vec::Vec<u8> = alloc::vec![0xFFu8; {n_literal}];\n")
+        else:
+            lines.append(f"        let {pname} = {_literal_from_spec_value(v)};\n")
+    arg_list = ", ".join(
+        f"&mut {p}" if p == mut_buf else p
+        for p in vec.inputs.keys()
+    )
+    if kind == "scalar":
+        lines.append(f"        let got = super::{fn_name}({arg_list});\n")
+        lines.append(
+            f"        assert_eq!(got, {_literal_from_spec_value(vec.expected_output)}, "
+            f'"{vec.description}");\n'
+        )
+    else:
+        # buffer_postcondition — call for side effect, inspect mut buffer.
+        lines.append(f"        super::{fn_name}({arg_list});\n")
+        expected_lit = _literal_from_spec_value(vec.expected_output)
+        # Compare only the first n_param bytes — tail bytes may retain
+        # the initial fill pattern (0xFF for zmemzero's buffer beyond len,
+        # or 0 for zmemcpy's dst beyond n).
+        lines.append(
+            f"        assert_eq!(&{mut_buf}[..{n_param}], {expected_lit}, "
+            f'"{vec.description}");\n'
+        )
+    lines.append("    }\n")
+    return "".join(lines)
+
+
 def _emit_spec_test(fn_name: str, vec: SpecTestVector, idx: int) -> str:
     """Emit a test from a spec.test_vectors entry."""
     # State-mutator vectors use a different test shape
     if vec.tolerance == "state_mutator":
         return _emit_state_mutator_test(fn_name, vec, idx)
+    # Byte-buffer transform vectors (zmem* family) carry a pipe-encoded
+    # tolerance field starting with "byte_transform".
+    if (vec.tolerance or "").startswith("byte_transform"):
+        return _emit_byte_transform_test(fn_name, vec, idx)
     test_name = f"test_{fn_name}_spec_{idx}"
     lines = [f"    #[test]\n    fn {test_name}() {{\n"]
     for pname, pvalue in vec.inputs.items():
@@ -402,7 +461,10 @@ def emit_module_test_block(
     emitted_any = False
 
     for alg in module.algorithms:
-        fn_name = alg.name
+        # Resolve the Rust function name the same way skeleton.py does so
+        # super::<fn>(...) resolves. Key case: zlib `_tr_init` / `_tr_align`
+        # lose their leading underscore in the skeleton's _snake() pass.
+        fn_name = _rust_fn_name(alg.name)
         # 1. Spec-provided test vectors
         for i, v in enumerate(alg.test_vectors or []):
             lines.append(_emit_spec_test(fn_name, v, i))
@@ -432,7 +494,7 @@ def emit_module_test_block(
     if not emitted_any and enable_smoke:
         # Fall back to smoke tests for every fn
         for alg in module.algorithms:
-            lines.append(_emit_smoke_test(alg.name))
+            lines.append(_emit_smoke_test(_rust_fn_name(alg.name)))
             stats["smoke"] += 1
 
     lines.append("}")

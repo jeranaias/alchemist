@@ -72,7 +72,42 @@ def _apply_type_aliases(rust_type: str) -> str:
     return out
 
 
-def normalize_spec(spec: AlgorithmSpec) -> tuple[AlgorithmSpec, list[str]]:
+def _infer_module_state_type(module_name: str) -> str | None:
+    """Given a module name, return the canonical state type for its functions.
+
+    Purely mechanical — no LLM involved. The C source's file organization is
+    the authoritative signal: trees.c / deflate.c operate on deflate_state,
+    inffast.c / inftrees.c / inflate.c operate on inflate_state. The LLM
+    extractor sometimes mislabels individual functions (e.g., marking
+    `_tr_align` as an inflate helper because its block-alignment purpose
+    sounded like decoder prep). This corrector overrides those mistakes
+    from the module's file name, which can't be wrong.
+    """
+    m = module_name.lower()
+    if any(tok in m for tok in ("inffast", "inftrees", "inflate", "inflat")):
+        return "InflateState"
+    if any(tok in m for tok in ("trees", "deflate", "deflat")):
+        return "DeflateState"
+    return None
+
+
+def _module_state_correction(
+    spec: AlgorithmSpec, rust_type: str, module_state_type: str | None,
+) -> str:
+    """If the module's canonical state type conflicts with a state type in
+    `rust_type`, flip it. Applies to `DeflateState`/`InflateState` only."""
+    if not module_state_type:
+        return rust_type
+    if module_state_type == "DeflateState" and "InflateState" in rust_type:
+        return rust_type.replace("InflateState", "DeflateState")
+    if module_state_type == "InflateState" and "DeflateState" in rust_type:
+        return rust_type.replace("DeflateState", "InflateState")
+    return rust_type
+
+
+def normalize_spec(
+    spec: AlgorithmSpec, module_state_type: str | None = None,
+) -> tuple[AlgorithmSpec, list[str]]:
     """Rewrite a single algorithm spec's parameters. Returns (new, notes)."""
     notes: list[str] = []
     new_inputs: list[Parameter] = []
@@ -82,6 +117,14 @@ def normalize_spec(spec: AlgorithmSpec) -> tuple[AlgorithmSpec, list[str]]:
         t = _apply_type_aliases(t_raw)
         if t != t_raw:
             notes.append(f"{spec.name}::{p.name}: {t_raw} → {t} (alias)")
+        # Module-scoped state-type correction (file-path-driven, authoritative
+        # for Deflate/Inflate confusion).
+        t_before_mod = t
+        t = _module_state_correction(spec, t, module_state_type)
+        if t != t_before_mod:
+            notes.append(
+                f"{spec.name}::{p.name}: {t_before_mod} → {t} (module state)"
+            )
         # Function-specific state-type corrections.
         corrected = _STATE_TYPE_CORRECTION.get((spec.name, p.name))
         if corrected and t != corrected:
@@ -139,6 +182,12 @@ def normalize_spec(spec: AlgorithmSpec) -> tuple[AlgorithmSpec, list[str]]:
     new_ret = _apply_type_aliases(orig_ret)
     if new_ret != orig_ret:
         notes.append(f"{spec.name}: return {orig_ret} → {new_ret} (alias)")
+    new_ret_before_mod = new_ret
+    new_ret = _module_state_correction(spec, new_ret, module_state_type)
+    if new_ret != new_ret_before_mod:
+        notes.append(
+            f"{spec.name}: return {new_ret_before_mod} → {new_ret} (module state)"
+        )
     if re.search(r"\bResult\s*<\s*u64\b", new_ret):
         # Only rewrite if the function has an inout length param we just normalized.
         if any(p.rust_type == "&mut usize" for p in new_inputs):
@@ -158,8 +207,9 @@ def normalize_module(mod: ModuleSpec) -> tuple[ModuleSpec, list[str]]:
     """Normalize every algorithm in a module. Returns (new_module, notes)."""
     notes: list[str] = []
     new_algs: list[AlgorithmSpec] = []
+    module_state_type = _infer_module_state_type(mod.name)
     for a in mod.algorithms or []:
-        new_a, alg_notes = normalize_spec(a)
+        new_a, alg_notes = normalize_spec(a, module_state_type=module_state_type)
         new_algs.append(new_a)
         notes.extend(alg_notes)
     if not notes:

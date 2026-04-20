@@ -158,6 +158,8 @@ class ModuleDetector:
             "scheduler", "queue", "semaphore", "mutex",
             "trees",  # zlib: Huffman tree construction
             "inffast", "inftrees", "infback",  # zlib inflate components
+            "miniz",  # miniz: single-file zlib-compatible compression
+            "tdefl", "tinfl",  # miniz's internal encode/decode modules
         }
         glue_names = {
             "util", "utils", "helper", "helpers", "compat",
