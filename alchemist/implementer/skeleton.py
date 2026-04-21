@@ -468,11 +468,63 @@ def _module_rs_for(
     for t in module.shared_types or []:
         lines.append(emit_shared_type(t))
         lines.append("")
+    # Known constants that the LLM can't reliably regenerate (long precomputed
+    # tables, named consts from the C source). Injecting these up front means
+    # the impl just references them instead of hallucinating.
+    consts = _known_constants_for_module(module.name)
+    if consts:
+        lines.append(consts)
+        lines.append("")
     # Function stubs
     for alg in module.algorithms:
         lines.append(emit_function_stub(alg))
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _known_constants_for_module(module_name: str) -> str:
+    """Return a Rust block of consts the impl for this module needs.
+
+    The LLM is poor at long precomputed tables (truncates at ~100 entries,
+    hallucinates values, miscounts for the declared array size). Providing
+    the table up front removes a whole class of failures and — critically —
+    lets the wins cache restore cached impls that reference these symbols
+    across runs.
+    """
+    name = module_name.lower()
+    if name == "crc32":
+        # Deterministic IEEE 802.3 table (reflected poly 0xEDB88320).
+        table = _crc32_ieee_table()
+        rows = []
+        for i in range(0, 256, 8):
+            row = ", ".join(f"0x{v:08x}" for v in table[i:i + 8])
+            rows.append(f"    {row},")
+        return (
+            "/// IEEE 802.3 CRC-32 reflected polynomial.\n"
+            "pub const CRC32_POLY: u32 = 0xedb88320;\n"
+            "/// IEEE 802.3 CRC-32 lookup table (reflected polynomial).\n"
+            "pub const CRC32_TABLE: [u32; 256] = [\n"
+            + "\n".join(rows) + "\n"
+            "];"
+        )
+    if name == "adler32":
+        return (
+            "/// Largest prime smaller than 65536.\n"
+            "pub const BASE: u32 = 65521;\n"
+            "/// Max n such that 255*n*(n+1)/2 + (n+1)*(BASE-1) <= 2^32-1.\n"
+            "pub const NMAX: usize = 5552;"
+        )
+    return ""
+
+
+def _crc32_ieee_table() -> list[int]:
+    table: list[int] = []
+    for n in range(256):
+        c = n
+        for _ in range(8):
+            c = (c >> 1) ^ 0xEDB88320 if c & 1 else c >> 1
+        table.append(c & 0xFFFFFFFF)
+    return table
 
 
 def _lib_rs_for(
