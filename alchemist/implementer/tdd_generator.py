@@ -1056,7 +1056,21 @@ class TDDGenerator:
         if not m:
             return None
         # Replace the entire fn item (attrs + signature + body)
-        return text[:m["item_start"]] + new_fn_text.strip() + "\n" + text[m["item_end"]:]
+        replaced = text[:m["item_start"]] + new_fn_text.strip() + "\n" + text[m["item_end"]:]
+        # Integrity guard: LLM sometimes returns whole-file contents that
+        # corrupt the module when spliced (recently observed: lib.rs loses
+        # all `pub mod X;` declarations, modules lose the skeleton header).
+        # If the splice shrinks the file dramatically or strips required
+        # boilerplate, refuse the splice.
+        if len(replaced) < max(120, len(text) // 3):
+            return None
+        # Skeleton always starts with these markers; any splice result that
+        # erases them is corrupting the file. Refuse.
+        required_markers = ("#![allow(unused", "use crate::")
+        for marker in required_markers:
+            if marker in text and marker not in replaced:
+                return None
+        return replaced
 
     def _find_fn(self, text: str, name: str) -> dict | None:
         pat = re.compile(self._FN_BLOCK_RE.pattern.replace("{name}", re.escape(name)), re.MULTILINE)
