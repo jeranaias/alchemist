@@ -475,5 +475,44 @@ def new(
     console.print(f"[green]initialized project at {root}[/green]")
 
 
+@app.command()
+def solo(
+    fn_name: str = typer.Argument(..., help="Function name to iterate"),
+    subject: Path = typer.Option(
+        Path("subjects/zlib"), "--subject", "-s",
+        help="Path to the subject codebase (must already have .alchemist/)",
+    ),
+    iters: int = typer.Option(
+        15, "--iters", "-i",
+        help="Max iterations per function (default 15, up from full-run 5)",
+    ),
+    temp: float = typer.Option(
+        0.5, "--temp", "-t",
+        help="Temperature for multi-sample candidates (default 0.5)",
+    ),
+    samples: int = typer.Option(
+        6, "--samples", "-n",
+        help="Multi-sample fan-out per iteration (default 6)",
+    ),
+    skip_if_cached: bool = typer.Option(
+        False, "--skip-if-cached",
+        help="Exit immediately if a cached win already exists for this fn",
+    ),
+):
+    """Iterate on ONE function until it passes. Surgical, parallel-safe."""
+    _banner()
+    from alchemist.solo import run_solo
+    attempt = run_solo(
+        subject=subject,
+        fn_name=fn_name,
+        iters=iters,
+        temperature=temp,
+        multi_sample_n=samples,
+        skip_if_cached=skip_if_cached,
+    )
+    if not attempt.tests_passed:
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()
