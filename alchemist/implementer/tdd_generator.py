@@ -725,12 +725,18 @@ class TDDGenerator:
         if getattr(resp, "error", ""):
             return None
         if resp.structured and "content" in resp.structured:
-            return (resp.structured.get("content") or "").strip() or None
+            content = (resp.structured.get("content") or "").strip()
+            # Some LLMs wrap their structured output in the schema itself:
+            # `content` ends up being a JSON string describing the schema,
+            # not the Rust code. Detect and drill in.
+            content = _unwrap_llm_schema_leak(content)
+            return content or None
         # Fallback: raw text
         raw = (resp.content or "").strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:\w+)?\s*", "", raw)
             raw = re.sub(r"```\s*$", "", raw)
+        raw = _unwrap_llm_schema_leak(raw)
         return raw or None
 
     def _multi_sample_attempt(
@@ -1432,3 +1438,44 @@ def _run_cargo_test_filter(path: Path, test_filter: str, timeout: int = 300) -> 
 
 def _top_lines(text: str, n: int) -> str:
     return "\n".join((text or "").splitlines()[:n])
+
+
+def _unwrap_llm_schema_leak(s: str) -> str:
+    """Strip JSON-schema wrappers an LLM sometimes emits verbatim.
+
+    Maverick occasionally responds with the raw tool_schema JSON
+    (`{"type": "object", "properties": {"content": {"value": "..."}}}`)
+    instead of the structured output itself. Parse for the embedded
+    `pub fn ...` body, or the `value` / `content` leaf.
+    """
+    if not s or "pub fn" in s and not s.lstrip().startswith("{"):
+        return s
+    # Attempt JSON parse
+    stripped = s.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            import json as _json
+            obj = _json.loads(stripped)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            # Schema-leak shape: {"properties": {"content": {"value": "..."}}}
+            props = obj.get("properties")
+            if isinstance(props, dict):
+                for key in ("content", "impl", "fn"):
+                    node = props.get(key)
+                    if isinstance(node, dict):
+                        v = node.get("value") or node.get("default") or node.get("example")
+                        if isinstance(v, str) and "pub fn" in v:
+                            return v.strip()
+            # Direct value: {"content": "pub fn ..."}
+            for key in ("content", "impl", "fn"):
+                v = obj.get(key)
+                if isinstance(v, str) and "pub fn" in v:
+                    return v.strip()
+    # Last resort: regex-extract the first `pub fn ...` block.
+    import re as _re
+    m = _re.search(r"pub\s+fn\s+\w+", s)
+    if m:
+        return s[m.start():].strip()
+    return s
