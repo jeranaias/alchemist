@@ -194,7 +194,19 @@ def run_solo(
         multi_sample_temperature=temperature,
     )
     # Initialize workspace-level context required by _fill_in_function.
+    # These are normally set in generate_workspace; solo skips that.
+    gen._source_root = subject
+    gen._probe_refs = {}
+    gen._probe_attempted = set()
     gen._workspace_dir = output_dir
+    # Fuzz backfill populates alg.test_vectors for state-mutator /
+    # byte-transform / pure-fn shapes. Without this, every solo fails
+    # with "no test vectors" because the spec files don't persist the
+    # vectors from a prior Phase B.
+    try:
+        gen._backfill_fuzz_vectors(specs)
+    except Exception as e:
+        console.print(f"[yellow]solo: fuzz backfill skipped ({e})[/yellow]")
     gen._cached_ctx = llm.create_cached_context(
         system_text=(
             "You are implementing one Rust function at a time from a spec. "
