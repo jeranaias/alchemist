@@ -388,11 +388,42 @@ def _emit_byte_transform_test(
     return "".join(lines)
 
 
+def _emit_state_observer_test(fn_name: str, vec: SpecTestVector, idx: int) -> str:
+    """Emit a test for a state-observer function.
+
+    Shape: read-only `&DeflateState` (or similar) → scalar return.
+    Input dict has keys `state.<field>` (same as state-mutator).
+    Expected output is a single rendered literal (e.g., "0i32").
+
+    The test sets up a fresh DeflateState, populates the pre-state fields,
+    calls the fn, and asserts the return value equals expected.
+    """
+    test_name = f"test_{fn_name}_observer_{idx}"
+    lines = [f"    #[test]\n    fn {test_name}() {{\n"]
+    lines.append("        let mut state = zlib_types::DeflateState::default();\n")
+    for pname, pvalue in vec.inputs.items():
+        if pname.startswith("state."):
+            field_name = pname[len("state."):]
+            lines.append(f"        state.{field_name} = {pvalue};\n")
+    lines.append(f"        let got = super::{fn_name}(&state);\n")
+    expected = vec.expected_output.strip()
+    if expected:
+        lines.append(
+            f"        assert_eq!(got, {expected}, "
+            f'"{vec.description}");\n'
+        )
+    lines.append("    }\n")
+    return "".join(lines)
+
+
 def _emit_spec_test(fn_name: str, vec: SpecTestVector, idx: int) -> str:
     """Emit a test from a spec.test_vectors entry."""
     # State-mutator vectors use a different test shape
     if vec.tolerance == "state_mutator":
         return _emit_state_mutator_test(fn_name, vec, idx)
+    # State-observer vectors (state_in -> scalar return, no mutation)
+    if vec.tolerance == "state_observer":
+        return _emit_state_observer_test(fn_name, vec, idx)
     # Byte-buffer transform vectors (zmem* family) carry a pipe-encoded
     # tolerance field starting with "byte_transform".
     if (vec.tolerance or "").startswith("byte_transform"):
