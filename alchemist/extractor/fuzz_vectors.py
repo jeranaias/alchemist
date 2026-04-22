@@ -509,11 +509,43 @@ def _x2nmodp_pure_ref(data: bytes) -> int:
     return p
 
 
+def _crc32_combine_gen64_pure_ref(data: bytes) -> int:
+    """crc32_combine_gen(len2) — returns x2nmodp(len2, 3).
+
+    Input layout: first 8 bytes = len2 (u64 LE).
+    """
+    padded = bytes(data[:8].ljust(8, b"\x00"))
+    # x2nmodp expects 12-byte input (n: u64, k: u32); we pack len2 + 3.
+    import struct
+    n_k = struct.pack("<Q", int.from_bytes(padded, "little")) + struct.pack("<I", 3)
+    return _x2nmodp_pure_ref(n_k)
+
+
+def _crc32_combine_op_pure_ref(data: bytes) -> int:
+    """crc32_combine_op(crc1, crc2, op) — zlib's CRC combiner.
+
+    Result: op == 0 ? 0 : multmodp(op, crc1) ^ crc2
+    Input layout: crc1 (u32), crc2 (u32), op (u32). 12 bytes total.
+    """
+    padded = bytes(data[:12].ljust(12, b"\x00"))
+    crc1 = int.from_bytes(padded[0:4], "little")
+    crc2 = int.from_bytes(padded[4:8], "little")
+    op = int.from_bytes(padded[8:12], "little")
+    if op == 0:
+        return 0
+    # multmodp takes (a, b) packed as 8 bytes; we compute multmodp(op, crc1)
+    import struct
+    ab = struct.pack("<I", op) + struct.pack("<I", crc1)
+    return (_multmodp_pure_ref(ab) ^ crc2) & 0xFFFFFFFF
+
+
 ZLIB_PURE_REFERENCES: dict[str, callable] = {
     "byte_swap": _byte_swap_pure_ref,
     "bi_reverse": _bi_reverse_pure_ref,
     "multmodp": _multmodp_pure_ref,
     "x2nmodp": _x2nmodp_pure_ref,
+    "crc32_combine_gen64": _crc32_combine_gen64_pure_ref,
+    "crc32_combine_op": _crc32_combine_op_pure_ref,
 }
 
 
