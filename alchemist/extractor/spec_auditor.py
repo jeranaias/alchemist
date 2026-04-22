@@ -202,7 +202,16 @@ def _c_first_param_to_rust(
     s = re.sub(r"\s+\w+\s*$", "", s).strip()
     base = _C_TO_RUST_BASE.get(s)
     if not base:
-        # Fall back to scalar return-type map (same C-to-Rust rules apply for scalar params).
+        # Fall back to scalar return-type map for UNAMBIGUOUS scalar types.
+        # Platform-sensitive types (uLong, ulg, z_off_t, unsigned long) vary
+        # width between LP64 (Unix, 64-bit long) and LLP64 (Windows, 32-bit
+        # long); the spec's choice — often informed by the catalog tests
+        # the LLM saw — is more reliable than our platform-default map.
+        _AMBIGUOUS_WIDTH = {
+            "uLong", "ulg", "long", "unsigned long", "z_off_t", "z_off64_t",
+        }
+        if s in _AMBIGUOUS_WIDTH:
+            return None
         scalar = _C_RETURN_TO_RUST.get(s)
         if scalar and scalar != "()" and not is_ptr:
             return scalar
