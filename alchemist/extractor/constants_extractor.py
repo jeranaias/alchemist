@@ -275,6 +275,40 @@ class ExtractionReport:
         return len(self.extracted)
 
 
+_RUST_RESERVED = {
+    # Rust keywords that must never appear as a const value expression
+    "as", "break", "const", "continue", "crate", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+    "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct",
+    "super", "trait", "true", "type", "unsafe", "use", "where", "while",
+    "async", "await", "dyn", "abstract", "become", "box", "do", "final",
+    "macro", "override", "priv", "typeof", "unsized", "virtual", "yield",
+}
+
+
+def _is_c_preprocessor_marker(value: str) -> bool:
+    """True if the value is a C construct that Rust can't represent as a const.
+
+    Examples from zlib trees.c:
+      #define TCONST           (empty body — visibility qualifier marker)
+      #define TCONST const     (keyword-value — C qualifier)
+      #define FAR              (calling-convention marker)
+    These aren't real constants; they're token-pasting helpers.
+    """
+    v = value.strip()
+    if not v:
+        return True
+    # A single Rust keyword used as a value expression — invalid
+    if v in _RUST_RESERVED:
+        return True
+    # A sequence of only reserved words (e.g., "const volatile")
+    parts = v.split()
+    if all(p in _RUST_RESERVED or p in {"volatile", "__far", "__near", "FAR"}
+           for p in parts):
+        return True
+    return False
+
+
 def extract_constants(c_source: str, c_file: str = "") -> ExtractionReport:
     """Extract all constants from a C translation unit.
 
@@ -295,6 +329,12 @@ def extract_constants(c_source: str, c_file: str = "") -> ExtractionReport:
         value = (m.group(2) or "").strip()
         if not value:
             continue
+        # Skip if the NAME collides with a Rust reserved word. Rust would
+        # require r#<name> raw-identifier syntax, but consts in pub-use
+        # chains can't be raw — skip rather than risk compile breakage.
+        if name in _RUST_RESERVED:
+            skipped.append((name, f"rust reserved name"))
+            continue
         # Skip function-like macros — `#define FOO(x) ...`
         # (the value group starts with `(` after the name word but _DEFINE_RE
         # only matches when name is followed by whitespace, not `(`).
@@ -308,6 +348,11 @@ def extract_constants(c_source: str, c_file: str = "") -> ExtractionReport:
         value = re.sub(r"/\*.*?\*/", "", value, flags=re.DOTALL).strip()
         value = re.sub(r"//.*$", "", value).strip()
         if not value:
+            continue
+        # Skip C preprocessor markers (TCONST, FAR, calling conventions, etc.)
+        # that don't translate to Rust constants.
+        if _is_c_preprocessor_marker(value):
+            skipped.append((name, f"c preprocessor marker: {value!r}"))
             continue
         rust_type = _infer_type_from_literal(value)
         rust_expr = _c_literal_to_rust(value, rust_type)
