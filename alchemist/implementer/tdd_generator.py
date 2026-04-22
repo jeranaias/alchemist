@@ -1228,8 +1228,20 @@ class TDDGenerator:
         return replaced
 
     def _find_fn(self, text: str, name: str) -> dict | None:
-        pat = re.compile(self._FN_BLOCK_RE.pattern.replace("{name}", re.escape(name)), re.MULTILINE)
-        m = pat.search(text)
+        # Skeleton renames fns via _snake (e.g., `zlibCompileFlags` →
+        # `zlib_compile_flags`). Spec's alg.name may be the original
+        # camelCase. Try both forms when searching the source.
+        from alchemist.implementer.skeleton import _snake
+        candidates = list({name, _snake(name)})
+        m = None
+        for cand in candidates:
+            pat = re.compile(
+                self._FN_BLOCK_RE.pattern.replace("{name}", re.escape(cand)),
+                re.MULTILINE,
+            )
+            m = pat.search(text)
+            if m:
+                break
         if not m:
             return None
         sig_end = m.end()  # position just past the `{` matched by _FN_BLOCK_RE
@@ -1644,15 +1656,27 @@ def _test_filters_for_fn(fn_name: str) -> list[str]:
       test_<fn>_spec_<idx>     — spec.test_vectors
       test_<fn>_state_<idx>    — state-mutator vectors
       test_<fn>_observer_<idx> — observer vectors
+      test_<fn>_xform_<idx>    — byte-transform vectors (zmem* family)
       smoke_<fn>               — legacy smoke test (rare)
+
+    Handles snake-case conversion: spec names like `zlibCompileFlags` are
+    rendered as `zlib_compile_flags` in Rust (by _snake in skeleton.py),
+    so tests use the snake-cased form. Include BOTH spec-name and
+    snake-name filters to cover either case.
     """
-    return [
-        f"test_{fn_name}_vec_",
-        f"test_{fn_name}_spec_",
-        f"test_{fn_name}_state_",
-        f"test_{fn_name}_observer_",
-        f"smoke_{fn_name}",
-    ]
+    from alchemist.implementer.skeleton import _snake
+    snake = _snake(fn_name)
+    filters: list[str] = []
+    for name in {fn_name, snake}:
+        filters.extend([
+            f"test_{name}_vec_",
+            f"test_{name}_spec_",
+            f"test_{name}_state_",
+            f"test_{name}_observer_",
+            f"test_{name}_xform_",
+            f"smoke_{name}",
+        ])
+    return filters
 
 
 def _top_lines(text: str, n: int) -> str:

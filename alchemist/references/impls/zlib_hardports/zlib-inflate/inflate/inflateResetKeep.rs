@@ -1,4 +1,4 @@
-pub fn inflateResetKeep(strm: &mut InflateStream) -> Result<(), InflateError> {
+pub fn inflate_reset_keep(strm: &mut InflateStream) -> Result<(), InflateError> {
     // Port of inflate.c:inflateResetKeep.
     // Soft reset — keeps the allocated window/tables but zeroes the
     // parse state so decompression can start a new stream on the

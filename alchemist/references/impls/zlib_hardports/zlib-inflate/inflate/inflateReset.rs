@@ -1,4 +1,4 @@
-pub fn inflateReset(strm: &mut InflateState) -> Result<(), InflateError> {
+pub fn inflate_reset(strm: &mut InflateState) -> Result<(), InflateError> {
     // Port of inflate.c:inflateReset.
     // Hard reset including wsize/whave/wnext. Caller uses this to
     // fully restart decompression (flushes window state). The keep-less

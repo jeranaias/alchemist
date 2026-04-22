@@ -1,4 +1,4 @@
-pub fn zlibCompileFlags() -> u32 {
+pub fn zlib_compile_flags() -> u32 {
     // Port of zutil.c:zlibCompileFlags.
     // Returns a bitfield describing the compile-time type sizes + feature
     // flags of the Rust build. Bits 0-1: sizeof(uInt), 2-3: sizeof(uLong),

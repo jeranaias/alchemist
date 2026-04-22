@@ -1,4 +1,4 @@
-pub fn inflatePrime(strm: &mut InflateState, bits: i32, value: u32) -> Result<(), InflateError> {
+pub fn inflate_prime(strm: &mut InflateState, bits: i32, value: u32) -> Result<(), InflateError> {
     // Port of inflate.c:inflatePrime.
     // Prepends `bits` bits of `value` into the inflater's bit buffer so
     // decompression can resume from a non-byte-aligned point. Used by

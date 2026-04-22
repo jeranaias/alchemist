@@ -1,4 +1,4 @@
-pub fn inflateReset2(stream: &mut InflateState, window_bits: i32) -> Result<(), InflateError> {
+pub fn inflate_reset2(stream: &mut InflateState, window_bits: i32) -> Result<(), InflateError> {
     // Port of inflate.c:inflateReset2.
     // Like inflateReset but also (re)configures the window-bits setting.
     //

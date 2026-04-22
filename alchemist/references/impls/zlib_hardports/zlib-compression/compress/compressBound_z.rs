@@ -1,4 +1,4 @@
-pub fn compressBound_z(sourceLen: usize) -> Option<usize> {
+pub fn compress_bound_z(sourceLen: usize) -> Option<usize> {
     // Port of compress.c:compressBound.
     // Returns the upper bound on the compressed size of `sourceLen` bytes.
     // Formula: sourceLen + (sourceLen / 1000) + 12 + 6 (zlib header + trailer

@@ -1,4 +1,4 @@
-pub fn deflateStateCheck(strm: &mut DeflateStream) -> i32 {
+pub fn deflate_state_check(strm: &mut DeflateStream) -> i32 {
     // Port of deflate.c:deflateStateCheck.
     // Returns 1 if the stream is INVALID, 0 if valid (matches C's `int`
     // return convention). &mut DeflateStream guarantees non-null; the

@@ -145,7 +145,7 @@ _C_RETURN_TO_RUST: dict[str, str] = {
     "ulg": "u64",
     "Byte": "u8",
     "Bytef": "u8",
-    "z_word_t": "u32",
+    "z_word_t": "u64",
     "z_off_t": "i64",
     "z_size_t": "usize",
 }
@@ -202,6 +202,10 @@ def _c_first_param_to_rust(
     s = re.sub(r"\s+\w+\s*$", "", s).strip()
     base = _C_TO_RUST_BASE.get(s)
     if not base:
+        # Fall back to scalar return-type map (same C-to-Rust rules apply for scalar params).
+        scalar = _C_RETURN_TO_RUST.get(s)
+        if scalar and scalar != "()" and not is_ptr:
+            return scalar
         return None
     # Resolve module-scoped aliases
     resolved = _resolve_module_token(base, module_role)
@@ -306,7 +310,7 @@ def audit_module(
         spec_ret = (alg.return_type or "").strip()
         expected_ret = _c_return_to_rust(c_ret)
         if expected_ret and spec_ret and spec_ret != expected_ret:
-            if _is_unambiguous_return_fix(spec_ret, expected_ret):
+            if _is_unambiguous_return_fix(spec_ret, expected_ret, c_ret=c_ret):
                 findings.append(AuditFinding(
                     module=module.name,
                     fn_name=alg.name,
@@ -320,21 +324,29 @@ def audit_module(
     return findings
 
 
-def _is_unambiguous_return_fix(spec_ret: str, expected_ret: str) -> bool:
+def _is_unambiguous_return_fix(
+    spec_ret: str, expected_ret: str, c_ret: str = ""
+) -> bool:
     """Decide whether auto-correcting spec_ret → expected_ret is safe.
 
     SAFE to fix:
       bool → i32    (status codes)
       u8/u16 → i32  (spec narrowed an `int` to a smaller unsigned)
       X → ()        (spec invented a return for a void fn)
+      u32 ↔ u64 WHEN c_ret is z_word_t (platform type fixed to 64-bit for
+                    x86_64/aarch64 builds; LLM routinely mis-guesses as u32)
 
     UNSAFE (skip):
-      u32 ↔ u64     (ambiguous — zlib's uLong varies by platform)
+      u32 ↔ u64     (ambiguous for uLong — varies by platform)
       Result/Option/& wrappers     (higher-level types the auditor can't judge)
     """
     s, e = spec_ret.strip(), expected_ret.strip()
+    c = (c_ret or "").strip()
     if any(x in s for x in ("Result", "Option", "<", "&")):
         return False
+    # z_word_t is always u64 on the 64-bit builds we target.
+    if c == "z_word_t" and {s, e} == {"u32", "u64"}:
+        return True
     # Cross-width unsigned-signed-unsigned flips are noisy; skip.
     if {s, e} == {"u32", "u64"} or {s, e} == {"u64", "u32"}:
         return False

@@ -582,6 +582,57 @@ def _crc32_combine_op_pure_ref(data: bytes) -> int:
     return (_multmodp_pure_ref(ab) ^ crc2) & 0xFFFFFFFF
 
 
+def _make_crc_table() -> tuple[int, ...]:
+    table = [0] * 256
+    for n in range(256):
+        c = n
+        for _ in range(8):
+            c = (c >> 1) ^ (0xEDB88320 if c & 1 else 0)
+        table[n] = c & 0xFFFFFFFF
+    return tuple(table)
+
+
+_CRC_TABLE = _make_crc_table()
+
+
+def _make_crc_big_table() -> tuple[int, ...]:
+    # Entry i is byte-reversed form of crc_table[i] (treated as 4-byte).
+    result = []
+    for v in _CRC_TABLE:
+        result.append(int.from_bytes(v.to_bytes(4, "little"), "big"))
+    return tuple(result)
+
+
+_CRC_BIG_TABLE = _make_crc_big_table()
+
+
+def _crc_word_pure_ref(data: bytes) -> int:
+    """crc_word(z_word_t) — iterates CRC through W=8 bytes of the word.
+
+    Port of crc32.c: `for k in 0..W { data = (data >> 8) ^ crc_table[data & 0xff]; }`
+    Returns low 32 bits (z_crc_t).
+    """
+    padded = bytes(data[:8].ljust(8, b"\x00"))
+    word = int.from_bytes(padded, "little")
+    for _ in range(8):
+        word = ((word >> 8) ^ _CRC_TABLE[word & 0xFF]) & 0xFFFFFFFFFFFFFFFF
+    return word & 0xFFFFFFFF
+
+
+def _crc_word_big_pure_ref(data: bytes) -> int:
+    """crc_word_big(z_word_t) — big-endian braided CRC iteration.
+
+    Port of crc32.c: `for k in 0..W { data = (data << 8) ^ big_table[(data >> 56) & 0xff]; }`
+    Returns full 64-bit z_word_t.
+    """
+    padded = bytes(data[:8].ljust(8, b"\x00"))
+    word = int.from_bytes(padded, "little")
+    for _ in range(8):
+        idx = (word >> 56) & 0xFF
+        word = (((word << 8) & 0xFFFFFFFFFFFFFFFF) ^ _CRC_BIG_TABLE[idx]) & 0xFFFFFFFFFFFFFFFF
+    return word
+
+
 def _zlib_compile_flags_pure_ref(data: bytes) -> int:
     """zlibCompileFlags() — fixed bitfield for the current build shape.
 
@@ -604,6 +655,8 @@ ZLIB_PURE_REFERENCES: dict[str, callable] = {
     "crc32_combine_op": _crc32_combine_op_pure_ref,
     "adler32_combine_": _adler32_combine_pure_ref,
     "zlibCompileFlags": _zlib_compile_flags_pure_ref,
+    "crc_word": _crc_word_pure_ref,
+    "crc_word_big": _crc_word_big_pure_ref,
 }
 
 
