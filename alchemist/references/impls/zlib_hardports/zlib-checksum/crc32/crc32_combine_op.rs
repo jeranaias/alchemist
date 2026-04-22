@@ -1,0 +1,1 @@
+ if (op == 0) { return 0; } return multmodp(op, crc1) ^ crc2; 

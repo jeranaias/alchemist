@@ -1,0 +1,1 @@
+pub fn bi_reverse(mut code: u32, len: u8) -> u32 { let mut res: u32 = 0; for _ in 0..len { res = (res << 1) | (code & 1); code >>= 1; } res }

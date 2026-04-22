@@ -298,9 +298,46 @@ class TDDGenerator:
             workspace_dir.parent / "wins" / crate / module / f"{fn_name}.rs"
         )
 
+    def _hardport_path(
+        self, subject_hint: str, crate: str, module: str, fn_name: str,
+    ) -> Path | None:
+        """Locate a hand-port for (subject, crate, module, fn) if one exists.
+
+        Hand-ports live in-package at
+          alchemist/references/impls/<subject>_hardports/<crate>/<module>/<fn>.rs
+
+        Subject hint is derived from the workspace name or crate prefix —
+        e.g., "zlib" for crate "zlib-checksum". Returns None if no match.
+        """
+        from alchemist.references import registry as _reg
+        base = _reg.REFERENCES_DIR
+        # Try subject-specific hardports dir
+        for key in (subject_hint, crate.split("-", 1)[0]):
+            if not key:
+                continue
+            p = base / f"{key}_hardports" / crate / module / f"{fn_name}.rs"
+            if p.exists():
+                return p
+        return None
+
     def _load_cached_win(
         self, workspace_dir: Path, crate: str, module: str, fn_name: str,
     ) -> str | None:
+        """Return the Rust body text to try first for this fn.
+
+        Priority:
+          1. Hand-port (alchemist/references/impls/<subject>_hardports/...)
+             — authored by humans, versioned with the package, always up to date.
+          2. Workspace wins cache (<workspace>/.alchemist/wins/...)
+             — LLM-produced wins from prior runs of THIS subject.
+        """
+        subject_hint = workspace_dir.parent.parent.name if workspace_dir else ""
+        hardport = self._hardport_path(subject_hint, crate, module, fn_name)
+        if hardport is not None:
+            try:
+                return hardport.read_text(encoding="utf-8")
+            except Exception:
+                pass
         p = self._wins_cache_path(workspace_dir, crate, module, fn_name)
         if p.exists():
             try:

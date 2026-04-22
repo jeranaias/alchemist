@@ -1,0 +1,1 @@
+pub fn multmodp(a: u32, b: u32) -> u32 { let mut m = 1 << 31; let mut p = 0; let mut b = b; while m != 0 { if a & m != 0 { p ^= b; if (a & (m - 1)) == 0 { return p; } } m >>= 1; b = if b & 1 != 0 { (b >> 1) ^ 0xEDB88320 } else { b >> 1 }; } p }

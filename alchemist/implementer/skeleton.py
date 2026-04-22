@@ -470,16 +470,18 @@ def _module_rs_for(
         lines.append("")
     # Constants: prefer the extractor-derived ones (attached to the spec).
     # Fall back to the hard-coded _known_constants_for_module map for
-    # tables that aren't in the C source (e.g., computed at runtime).
+    # tables that aren't in the C source (e.g., computed at runtime by
+    # make_crc_table rather than declared as a static const array).
     spec_consts = list(getattr(module, "constants", None) or [])
+    spec_const_names = {c.name for c in spec_consts}
     if spec_consts:
         from alchemist.extractor.constants_extractor import render_constants_block
         lines.append(render_constants_block(spec_consts))
         lines.append("")
-    # Known constants that the LLM can't reliably regenerate (long precomputed
-    # tables, named consts from the C source). Injecting these up front means
-    # the impl just references them instead of hallucinating.
-    consts = _known_constants_for_module(module.name)
+    # De-duplicate: if extractor already produced a const with the same
+    # name, don't emit the fallback version. Otherwise two `pub const X`
+    # declarations would collide at compile time.
+    consts = _known_constants_for_module(module.name, exclude_names=spec_const_names)
     if consts:
         lines.append(consts)
         lines.append("")
@@ -490,7 +492,9 @@ def _module_rs_for(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _known_constants_for_module(module_name: str) -> str:
+def _known_constants_for_module(
+    module_name: str, *, exclude_names: set[str] | None = None,
+) -> str:
     """Return a Rust block of consts the impl for this module needs.
 
     The LLM is poor at long precomputed tables (truncates at ~100 entries,
@@ -498,31 +502,44 @@ def _known_constants_for_module(module_name: str) -> str:
     the table up front removes a whole class of failures and — critically —
     lets the wins cache restore cached impls that reference these symbols
     across runs.
+
+    `exclude_names` skips constants that were already emitted by the
+    extractor-driven path (prevents duplicate `pub const` definitions).
     """
+    skip = exclude_names or set()
     name = module_name.lower()
+    parts: list[str] = []
     if name == "crc32":
-        # Deterministic IEEE 802.3 table (reflected poly 0xEDB88320).
-        table = _crc32_ieee_table()
-        rows = []
-        for i in range(0, 256, 8):
-            row = ", ".join(f"0x{v:08x}" for v in table[i:i + 8])
-            rows.append(f"    {row},")
-        return (
-            "/// IEEE 802.3 CRC-32 reflected polynomial.\n"
-            "pub const CRC32_POLY: u32 = 0xedb88320;\n"
-            "/// IEEE 802.3 CRC-32 lookup table (reflected polynomial).\n"
-            "pub const CRC32_TABLE: [u32; 256] = [\n"
-            + "\n".join(rows) + "\n"
-            "];"
-        )
-    if name == "adler32":
-        return (
-            "/// Largest prime smaller than 65536.\n"
-            "pub const BASE: u32 = 65521;\n"
-            "/// Max n such that 255*n*(n+1)/2 + (n+1)*(BASE-1) <= 2^32-1.\n"
-            "pub const NMAX: usize = 5552;"
-        )
-    return ""
+        if "CRC32_POLY" not in skip:
+            parts.append(
+                "/// IEEE 802.3 CRC-32 reflected polynomial.\n"
+                "pub const CRC32_POLY: u32 = 0xedb88320;"
+            )
+        if "CRC32_TABLE" not in skip:
+            # Deterministic IEEE 802.3 table (reflected poly 0xEDB88320).
+            table = _crc32_ieee_table()
+            rows = []
+            for i in range(0, 256, 8):
+                row = ", ".join(f"0x{v:08x}" for v in table[i:i + 8])
+                rows.append(f"    {row},")
+            parts.append(
+                "/// IEEE 802.3 CRC-32 lookup table (reflected polynomial).\n"
+                "pub const CRC32_TABLE: [u32; 256] = [\n"
+                + "\n".join(rows) + "\n"
+                "];"
+            )
+    elif name == "adler32":
+        if "BASE" not in skip:
+            parts.append(
+                "/// Largest prime smaller than 65536.\n"
+                "pub const BASE: u32 = 65521;"
+            )
+        if "NMAX" not in skip:
+            parts.append(
+                "/// Max n such that 255*n*(n+1)/2 + (n+1)*(BASE-1) <= 2^32-1.\n"
+                "pub const NMAX: usize = 5552;"
+            )
+    return "\n".join(parts)
 
 
 def _crc32_ieee_table() -> list[int]:
