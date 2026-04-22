@@ -227,8 +227,14 @@ def test_end_to_end_with_fake_llm(tmp_path):
         ],
     )
 
+    # Nest the workspace under tmp_path so the wins cache (stored at
+    # workspace.parent / "wins") is isolated per test. Without this, pytest
+    # shares tmp_path.parent across tests and a prior test's successful run
+    # populates the cache used by a later test.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     gen = TDDGenerator(llm=_FakeLLM(), max_iter_per_fn=2, holistic_after=5)
-    result = gen.generate_workspace([module], arch, tmp_path)
+    result = gen.generate_workspace([module], arch, workspace)
 
     assert result.skeleton is not None
     assert result.skeleton.ok, "skeleton must compile"
@@ -268,12 +274,15 @@ def test_tdd_rejects_stub_code_from_llm(tmp_path):
         crates=[CrateSpec(name="zlib-checksum", description="",
                           modules=["checksum"], is_no_std=False)],
     )
+    # Nest the workspace to isolate the wins cache (see sibling test).
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     gen = TDDGenerator(llm=_StubbyLLM(), max_iter_per_fn=2, holistic_after=5)
-    result = gen.generate_workspace([module], arch, tmp_path)
+    result = gen.generate_workspace([module], arch, workspace)
 
     adler = next(a for a in result.attempts if a.algorithm == "adler32")
     # The stub should have been rejected every iteration → never compiled a real impl
     assert not adler.tests_passed
     # Module file should still contain unimplemented!() from the skeleton
-    mod_file = (tmp_path / "zlib-checksum" / "src" / "checksum.rs").read_text()
+    mod_file = (workspace / "zlib-checksum" / "src" / "checksum.rs").read_text()
     assert "unimplemented" in mod_file

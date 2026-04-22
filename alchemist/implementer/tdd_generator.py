@@ -574,14 +574,21 @@ class TDDGenerator:
                         continue
                     attempt.final_compiled = True
                     attempt.tests_passed = True
-                    # Snapshot the winning function body from the module file.
+                    # Snapshot the winning FULL fn item (signature + body) from
+                    # the module file. Prior bug: saved body-only, which the
+                    # splice guard (5cf38f3) then rejects at restore time,
+                    # making the cache entry unusable. Save full fn instead.
                     try:
                         final_src = module_path.read_text(encoding="utf-8")
-                        final_body = self._extract_fn_body(final_src, alg.name)
-                        if final_body:
+                        m = self._find_fn(final_src, alg.name)
+                        final_fn = (
+                            final_src[m["item_start"]:m["item_end"]]
+                            if m else None
+                        )
+                        if final_fn:
                             self._save_cached_win(
                                 workspace_dir, crate_spec.name, module.name,
-                                alg.name, final_body,
+                                alg.name, final_fn,
                             )
                     except Exception as e:  # noqa: BLE001
                         console.print(
@@ -1188,16 +1195,19 @@ class TDDGenerator:
         # Integrity guard: LLM sometimes returns whole-file contents that
         # corrupt the module when spliced (recently observed: lib.rs loses
         # all `pub mod X;` declarations, modules lose the skeleton header).
-        # If the splice shrinks the file dramatically or strips required
-        # boilerplate, refuse the splice.
-        if len(replaced) < max(120, len(text) // 3):
-            return None
-        # Skeleton always starts with these markers; any splice result that
-        # erases them is corrupting the file. Refuse.
+        # Guard in two tiers:
+        #   1. If the text carried required boilerplate (skeleton markers,
+        #      use statements, pub mod items) — the splice MUST preserve it.
+        #      Erasing a marker is a clear corruption signal.
+        #   2. Length guard only applies when the original was substantially
+        #      populated (>=500 chars). Below that, small test modules and
+        #      freshly-scaffolded stubs are legitimately small.
         required_markers = ("#![allow(unused", "use crate::")
         for marker in required_markers:
             if marker in text and marker not in replaced:
                 return None
+        if len(text) >= 500 and len(replaced) < max(120, len(text) // 3):
+            return None
         return replaced
 
     def _find_fn(self, text: str, name: str) -> dict | None:
@@ -1414,7 +1424,13 @@ class TDDGenerator:
                         added += len(vectors)
                     continue
                 # C-shim state-observer path (state_in -> scalar return)
-                if shim_dll is not None and alg.name in ZLIB_SHIM_OBSERVER_BINDINGS:
+                # DISABLED 2026-04-22: emitter writes state.<flat_field_name>
+                # but DeflateState uses structured fields (e.g., dyn_ltree:
+                # Vec<(u16,u16)>, not dyn_ltree_freq: Vec<u16>). Also hardport
+                # returns u8 while binding declares i32. Re-enable once
+                # CShimField supports a rust_write_template / field mapping.
+                # See detect_data_type for the test case.
+                if False and shim_dll is not None and alg.name in ZLIB_SHIM_OBSERVER_BINDINGS:
                     vectors = fuzz_observer_shim(
                         shim_dll, alg, ZLIB_SHIM_OBSERVER_BINDINGS[alg.name],
                     )

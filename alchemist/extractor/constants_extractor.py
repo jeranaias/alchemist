@@ -147,7 +147,15 @@ _C_NUM_LITERAL_RE = re.compile(
       |
       (?P<dec>\d+)
     )
-    (?P<suffix>[uUlL]*)
+    # Optional trailing suffix: stdint-style ('u32', 'i64', 'usize') takes
+    # priority over plain C99 ('u', 'U', 'l', 'L', 'UL', 'ULL', etc.), so
+    # we match the width-bearing form first. Both are stripped — the Rust
+    # emitter applies a type suffix appropriate to the declared const type.
+    (?P<suffix>
+        [uUiI](?:8|16|32|64|128|size)
+        |
+        (?:[uU][lL]{0,2}|[lL]{1,2}[uU]?)
+    )?
     $
     """,
     re.VERBOSE,
@@ -231,13 +239,30 @@ _SAFE_TOKEN_RE = re.compile(
 
 
 def _is_safe_const_expr(s: str) -> bool:
-    """True if s tokenizes as a safe subset of C const expressions."""
+    """True if s tokenizes as a safe subset of C const expressions.
+
+    Rejects function-call patterns (identifier immediately followed by `(`)
+    since these cannot be const-evaluated by the extractor. Without this
+    check, `foo(42)` would tokenize as `foo`, `(`, `42`, `)` — all safe
+    individually — and get emitted as a Rust const, producing bad code.
+    """
+    tokens: list[str] = []
     pos = 0
     while pos < len(s):
         m = _SAFE_TOKEN_RE.match(s, pos)
         if not m or m.end() == pos:
             return False
+        tok = m.group(0)
+        if not tok.isspace():
+            tokens.append(tok)
         pos = m.end()
+    # Reject IDENT '(' patterns — that's a function call, not a const.
+    # (Parenthesized sub-expressions like `(1 << 2)` start with `(` token,
+    # not with an identifier, so this only catches the call case.)
+    ident_re = re.compile(r"^[A-Za-z_]\w*$")
+    for i in range(len(tokens) - 1):
+        if ident_re.match(tokens[i]) and tokens[i + 1] == "(":
+            return False
     return True
 
 
@@ -436,9 +461,20 @@ def _extract_static_const_tables(c_source: str, c_file: str) -> list[ConstantSpe
     """Find `static const TYPE NAME[DIM] = { ... };` and extract."""
     out: list[ConstantSpec] = []
     for m in _STATIC_CONST_RE.finditer(c_source):
-        if "static" not in (m.group("qual") or "") and "const" not in (m.group("qual") or ""):
+        qual = (m.group("qual") or "").strip()
+        if "static" not in qual and "const" not in qual:
             continue
         ctype = (m.group("ctype") or "").strip()
+        # Fold relevant width-qualifiers (unsigned/signed) back into the
+        # type string so `_rust_type_for` sees `"unsigned int"` not `"int"`.
+        # Without this, `static const unsigned int table[]` renders as
+        # `[i32; N]` instead of `[u32; N]`.
+        qual_parts = [
+            p for p in qual.split()
+            if p in ("unsigned", "signed")
+        ]
+        if qual_parts:
+            ctype = (" ".join(qual_parts) + " " + ctype).strip()
         name = m.group("name")
         dims = m.group("dims") or ""
         # Walk braces to find the end
