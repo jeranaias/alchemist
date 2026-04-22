@@ -137,6 +137,11 @@ def _sanitize_rust_type(rust_type: str) -> str:
     if "dyn std::any::Any" in t or "dyn Any" in t:
         t = "usize"
 
+    # C-FFI `c_void` references aren't imported in our skeletons. Rewrite
+    # to `u8` which matches the voidpf → *mut u8 convention in the
+    # normalizer — a safe opaque byte-pointer placeholder.
+    t = re.sub(r"\bc_void\b", "u8", t)
+
     # ZlibStream, ZStream → () placeholder (these should be in shared types
     # but if they aren't, don't crash the skeleton)
     # Only replace if the type isn't already imported from a dep crate
