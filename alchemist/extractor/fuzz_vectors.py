@@ -251,20 +251,33 @@ def fuzz_pure_reference(
             result[p.name] = _bytes_to_rust_literal(bytes(data))
         return result
 
+    ret = (alg.return_type or "u32").strip()
+    # Detect Option<inner> wrapping to emit Some(val)/None literals.
+    opt_m = re.fullmatch(r"Option<\s*([A-Za-z0-9_]+)\s*>", ret)
+    inner_ret = opt_m.group(1) if opt_m else ret
+
+    def _format_scalar(val: int, type_name: str) -> str:
+        if type_name in ("u8", "u16", "u32", "u64", "usize"):
+            return f"{val}{type_name}"
+        if type_name in ("i8", "i16", "i32", "i64", "isize"):
+            return f"{val}{type_name}" if val >= 0 else f"({val}{type_name})"
+        return f"0x{val:08x}"
+
     for data in inputs_raw:
-        # Adapter returns either an int (scalar output) or bytes.
+        # Adapter returns either an int (scalar output), bytes, or None
+        # (only valid when the Rust return type is an Option).
         output = reference(data)
-        if isinstance(output, (bytes, bytearray)):
+        if output is None:
+            if not opt_m:
+                # Reference signaled "no result" but spec expects a
+                # scalar — skip this vector rather than render garbage.
+                continue
+            expected = "None"
+        elif isinstance(output, (bytes, bytearray)):
             expected = _bytes_to_rust_literal(bytes(output))
         else:
-            # Prefer the declared return type for correct suffix.
-            ret = (alg.return_type or "u32").strip()
-            if ret in ("u8", "u16", "u32", "u64", "usize"):
-                expected = f"{int(output)}{ret}"
-            elif ret in ("i8", "i16", "i32", "i64", "isize"):
-                expected = f"{int(output)}{ret}"
-            else:
-                expected = f"0x{int(output):08x}"
+            scalar_lit = _format_scalar(int(output), inner_ret)
+            expected = f"Some({scalar_lit})" if opt_m else scalar_lit
         vectors.append(SpecTestVector(
             description=f"fuzz_input_len_{len(data)}",
             source=f"pure Python reference: {alg.name}",
@@ -633,6 +646,22 @@ def _crc_word_big_pure_ref(data: bytes) -> int:
     return word
 
 
+def _compress_bound_z_pure_ref(data: bytes) -> int | None:
+    """compressBound_z(sourceLen) — upper bound on deflate+zlib output.
+
+    Formula: sourceLen + (sourceLen / 1000) + 12 + 6 using checked arithmetic.
+    Returns None on overflow, matching the hardport's `Option<usize>` semantics.
+    """
+    padded = bytes(data[:8].ljust(8, b"\x00"))
+    source_len = int.from_bytes(padded, "little")
+    USIZE_MAX = (1 << 64) - 1  # Match Rust usize on 64-bit targets.
+    q = source_len // 1000
+    total = source_len + q + 12 + 6
+    if total > USIZE_MAX:
+        return None
+    return total
+
+
 def _zlib_compile_flags_pure_ref(data: bytes) -> int:
     """zlibCompileFlags() — fixed bitfield for the current build shape.
 
@@ -657,6 +686,7 @@ ZLIB_PURE_REFERENCES: dict[str, callable] = {
     "zlibCompileFlags": _zlib_compile_flags_pure_ref,
     "crc_word": _crc_word_pure_ref,
     "crc_word_big": _crc_word_big_pure_ref,
+    "compressBound_z": _compress_bound_z_pure_ref,
 }
 
 
