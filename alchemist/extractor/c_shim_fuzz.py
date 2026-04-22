@@ -576,7 +576,9 @@ ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
             # slide amount the C shim was configured with. Without this,
             # the Rust test defaults w_size=0, producing a no-op, while
             # the C oracle slid by 16 — post-state mismatch kills the win.
-            CShimField("w_size", "u32", lambda rng: 16,
+            # Rust's DeflateState.w_size is `usize` (not u32), so the
+            # rendered literal must use the usize suffix to compile.
+            CShimField("w_size", "usize", lambda rng: 16,
                        set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
             CShimField("head", "Vec<u16>", _fuzz_u16_vec_fixed16, is_u16_buf=True, max_len=16),
             CShimField("prev", "Vec<u16>", _fuzz_u16_vec_fixed16, is_u16_buf=True, max_len=16),
