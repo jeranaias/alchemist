@@ -461,12 +461,17 @@ def _multmodp_pure_ref(data: bytes) -> int:
 
 
 def _x2nmodp_pure_ref(data: bytes) -> int:
-    """x2nmodp(n, k) — GF(2)[x]/p(x) exponent combinator from zlib's crc32.c.
+    """x2nmodp(n, k) — zlib's GF(2)[x]/p(x) power-of-x combinator.
 
-    Computes x^(n * 2^(k+3)) mod p(x) in reflected IEEE-802.3 form, used
-    to combine CRC-32 checksums of two byte streams without rescanning.
+    Returns x^(n * 2^k) mod p(x) in reflected IEEE-802.3 form. Used by
+    crc32_combine_gen to merge CRC-32 of two byte streams.
 
     Input layout: first 8 bytes = n (u64 LE), next 4 bytes = k (u32 LE).
+
+    Faithful port of `local uLong x2nmodp(z_off64_t n, unsigned k)` in
+    zlib's crc32.c (lines 184–195):
+        p = x^0 = (1 << 31)
+        while n: if n&1: p = multmodp(x2n_table[k&31], p); n >>= 1; k++
     """
     padded = bytes(data[:12].ljust(12, b"\x00"))
     n = int.from_bytes(padded[0:8], "little")
@@ -489,23 +494,22 @@ def _x2nmodp_pure_ref(data: bytes) -> int:
                 b >>= 1
         return p & 0xFFFFFFFF
 
-    t = [0] * 32
-    t[0] = 0x80000000
+    # Build x2n_table[n] = x^(2^n) mod p(x), reflected.
+    # zlib initializes: p = 1 << 30 (x^1), table[0] = p,
+    # then table[n] = multmodp(table[n-1], table[n-1]).
+    x2n_table = [0] * 32
+    x2n_table[0] = 1 << 30
     for i in range(1, 32):
-        t[i] = _mm(t[i - 1], t[i - 1])
+        x2n_table[i] = _mm(x2n_table[i - 1], x2n_table[i - 1])
 
-    p = 0x80000000
-    idx = 3
-    while k:
-        if k & 1:
-            p = _mm(t[idx & 31], p)
-        idx = (idx + 1) & 31
-        k >>= 1
-    while n:
-        if n & 1:
-            p = _mm(t[idx & 31], p)
-        idx = (idx + 1) & 31
-        n >>= 1
+    p = 1 << 31  # x^0 == 1 in reflected form
+    k_local = k
+    n_local = n
+    while n_local:
+        if n_local & 1:
+            p = _mm(x2n_table[k_local & 31], p)
+        n_local >>= 1
+        k_local += 1
     return p
 
 
