@@ -1424,13 +1424,12 @@ class TDDGenerator:
                         added += len(vectors)
                     continue
                 # C-shim state-observer path (state_in -> scalar return)
-                # DISABLED 2026-04-22: emitter writes state.<flat_field_name>
-                # but DeflateState uses structured fields (e.g., dyn_ltree:
-                # Vec<(u16,u16)>, not dyn_ltree_freq: Vec<u16>). Also hardport
-                # returns u8 while binding declares i32. Re-enable once
-                # CShimField supports a rust_write_template / field mapping.
-                # See detect_data_type for the test case.
-                if False and shim_dll is not None and alg.name in ZLIB_SHIM_OBSERVER_BINDINGS:
+                # Re-enabled 2026-04-22: CShimField now supports
+                # rust_write_template for shim-vs-Rust field-shape mapping,
+                # and detect_data_type's hardport now returns i32 matching
+                # the binding. The test emitter consumes __stmt__<N> keys
+                # from the vector (fully-rendered assignment statements).
+                if shim_dll is not None and alg.name in ZLIB_SHIM_OBSERVER_BINDINGS:
                     vectors = fuzz_observer_shim(
                         shim_dll, alg, ZLIB_SHIM_OBSERVER_BINDINGS[alg.name],
                     )
