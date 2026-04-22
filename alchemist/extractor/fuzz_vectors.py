@@ -460,10 +460,60 @@ def _multmodp_pure_ref(data: bytes) -> int:
     return p
 
 
+def _x2nmodp_pure_ref(data: bytes) -> int:
+    """x2nmodp(n, k) — GF(2)[x]/p(x) exponent combinator from zlib's crc32.c.
+
+    Computes x^(n * 2^(k+3)) mod p(x) in reflected IEEE-802.3 form, used
+    to combine CRC-32 checksums of two byte streams without rescanning.
+
+    Input layout: first 8 bytes = n (u64 LE), next 4 bytes = k (u32 LE).
+    """
+    padded = bytes(data[:12].ljust(12, b"\x00"))
+    n = int.from_bytes(padded[0:8], "little")
+    k = int.from_bytes(padded[8:12], "little")
+    POLY = 0xEDB88320
+
+    def _mm(a: int, b: int) -> int:
+        if a == 0:
+            return 0
+        m, p = 1 << 31, 0
+        while True:
+            if a & m:
+                p ^= b
+                if (a & (m - 1)) == 0:
+                    break
+            m >>= 1
+            if b & 1:
+                b = (b >> 1) ^ POLY
+            else:
+                b >>= 1
+        return p & 0xFFFFFFFF
+
+    t = [0] * 32
+    t[0] = 0x80000000
+    for i in range(1, 32):
+        t[i] = _mm(t[i - 1], t[i - 1])
+
+    p = 0x80000000
+    idx = 3
+    while k:
+        if k & 1:
+            p = _mm(t[idx & 31], p)
+        idx = (idx + 1) & 31
+        k >>= 1
+    while n:
+        if n & 1:
+            p = _mm(t[idx & 31], p)
+        idx = (idx + 1) & 31
+        n >>= 1
+    return p
+
+
 ZLIB_PURE_REFERENCES: dict[str, callable] = {
     "byte_swap": _byte_swap_pure_ref,
     "bi_reverse": _bi_reverse_pure_ref,
     "multmodp": _multmodp_pure_ref,
+    "x2nmodp": _x2nmodp_pure_ref,
 }
 
 
