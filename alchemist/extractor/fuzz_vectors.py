@@ -582,6 +582,19 @@ def _crc32_combine_op_pure_ref(data: bytes) -> int:
     return (_multmodp_pure_ref(ab) ^ crc2) & 0xFFFFFFFF
 
 
+def _zlib_compile_flags_pure_ref(data: bytes) -> int:
+    """zlibCompileFlags() — fixed bitfield for the current build shape.
+
+    For 64-bit Windows/Unix with Rust:
+      u_int = u32 = 4 bytes → enc = 1
+      u_long = u64 = 8 bytes → enc = 2
+      voidpf = usize = 8 bytes → enc = 2
+      z_off = i64 = 8 bytes → enc = 2
+    Result: 1 | (2 << 2) | (2 << 4) | (2 << 6) = 169
+    """
+    return 1 | (2 << 2) | (2 << 4) | (2 << 6)
+
+
 ZLIB_PURE_REFERENCES: dict[str, callable] = {
     "byte_swap": _byte_swap_pure_ref,
     "bi_reverse": _bi_reverse_pure_ref,
@@ -590,6 +603,7 @@ ZLIB_PURE_REFERENCES: dict[str, callable] = {
     "crc32_combine_gen64": _crc32_combine_gen64_pure_ref,
     "crc32_combine_op": _crc32_combine_op_pure_ref,
     "adler32_combine_": _adler32_combine_pure_ref,
+    "zlibCompileFlags": _zlib_compile_flags_pure_ref,
 }
 
 
