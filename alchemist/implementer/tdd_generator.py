@@ -736,23 +736,19 @@ class TDDGenerator:
             # No tests matched this function's prefix — P2 violation to
             # accept. Mark as failed so the user sees which functions are
             # unverifiable. Fuzz-vector backfill already ran; if it produced
-            # nothing, the only path forward is to extend fuzz bindings.
+            # nothing, no amount of retry will help — the only path forward
+            # is to extend fuzz bindings. Break out of the iteration loop
+            # instead of burning LLM calls we cannot verify.
             if ok_test and not had_real_tests:
                 attempt.last_error = (
                     "no correctness test available for this function; "
                     "compile-only acceptance is forbidden by the "
                     "zero-shortcut policy"
                 )
-                previous_failure = (
-                    "## No tests run — compile-only acceptance is forbidden\n\n"
-                    "This function needs a test vector but none exists in the "
-                    "spec or standards catalog. The pipeline will not accept "
-                    "an implementation that cannot be verified."
-                )
                 console.print(
                     f"  [red]{alg.name}: no test vectors — cannot verify correctness[/red]"
                 )
-                continue
+                return attempt
 
             attempt.last_error = _top_lines(terr, 5)
             previous_failure = (
