@@ -53,6 +53,12 @@ _TYPE_ALIAS: dict[str, str] = {
     "voidpf": "*mut u8",
     "voidp": "*mut u8",
     "ZlibStream": "DeflateStream",
+    # LLM-fabricated spellings for z_stream that the extractor
+    # occasionally produces. Treat them as DeflateStream; the
+    # module-scoped corrector will flip to InflateStream for
+    # inflate-side functions.
+    "ZStream": "DeflateStream",
+    "ZStreamP": "&mut DeflateStream",
 }
 
 # Functions whose state param is mis-typed. Maps (fn_name, param_name) →
