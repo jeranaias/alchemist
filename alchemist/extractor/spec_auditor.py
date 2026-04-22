@@ -217,6 +217,13 @@ def audit_module(
             first = alg.inputs[0]
             expected = _c_first_param_to_rust(c_first_param, module_role)
             if expected and first.rust_type and first.rust_type != expected:
+                # If the only difference is mutability and the spec side
+                # is the MORE RESTRICTIVE (&T vs &mut T), keep the spec's
+                # choice. The C pointer type doesn't distinguish read-only
+                # from read-write; specs authored by the hardport or a
+                # human review may know better than the auditor's default.
+                if _only_mutability_diff(first.rust_type, expected):
+                    continue
                 findings.append(AuditFinding(
                     module=module.name,
                     fn_name=alg.name,
@@ -228,6 +235,19 @@ def audit_module(
                     auto_fix=True,
                 ))
     return findings
+
+
+def _only_mutability_diff(current: str, expected: str) -> bool:
+    """True when `current` and `expected` differ ONLY in `&mut T` vs `&T`.
+
+    C pointer parameters don't encode whether the callee mutates, so an
+    auditor that always outputs `&mut T` can't distinguish observers from
+    mutators. Specs that already specify `&T` (e.g., detect_data_type)
+    are more precise than the default — trust them.
+    """
+    def normalize(s: str) -> str:
+        return s.replace("&mut ", "").replace("&", "").strip()
+    return normalize(current) == normalize(expected) and current != expected
 
 
 def audit_all(
