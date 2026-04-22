@@ -1170,8 +1170,21 @@ class TDDGenerator:
         m = self._find_fn(text, name)
         if not m:
             return None
+        # Protection against body-only replacements (legacy cache format).
+        # `new_fn_text` MUST be a full fn item: either starts with attrs/docs,
+        # has `pub fn NAME`, `fn NAME`, or similar. If it's body-only, the
+        # splice corrupts the module (observed: cache hit for crc32_combine_op
+        # stored just the body, splice produced a naked body in place of the
+        # fn declaration, crate lost 14+ functions in the blast radius).
+        stripped = new_fn_text.strip()
+        looks_like_body_only = (
+            not re.search(r"\bfn\s+" + re.escape(name) + r"\b", stripped)
+            and not stripped.startswith(("pub ", "#[", "///", "//!"))
+        )
+        if looks_like_body_only:
+            return None
         # Replace the entire fn item (attrs + signature + body)
-        replaced = text[:m["item_start"]] + new_fn_text.strip() + "\n" + text[m["item_end"]:]
+        replaced = text[:m["item_start"]] + stripped + "\n" + text[m["item_end"]:]
         # Integrity guard: LLM sometimes returns whole-file contents that
         # corrupt the module when spliced (recently observed: lib.rs loses
         # all `pub mod X;` declarations, modules lose the skeleton header).
