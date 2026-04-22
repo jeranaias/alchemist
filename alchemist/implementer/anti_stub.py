@@ -20,13 +20,88 @@ from pathlib import Path
 
 
 # Rust built-in stub calls. ALWAYS a violation in production code.
+#
+# Patterns use `\b` plus whitespace-insensitive matching so that any
+# obfuscation via inserted whitespace (e.g., `unimplemented !  ( )`) is
+# caught. Stub message content is irrelevant — the MACRO CALL itself is
+# the violation. A fn that ships `unimplemented!(anything)` is a stub.
 BUILTIN_STUB_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("unimplemented_macro", re.compile(r"\bunimplemented!\s*\(")),
-    ("todo_macro", re.compile(r"\btodo!\s*\(")),
+    ("unimplemented_macro", re.compile(r"\bunimplemented\s*!\s*\(")),
+    ("todo_macro", re.compile(r"\btodo\s*!\s*\(")),
     ("panic_not_impl", re.compile(
-        r'\bpanic!\s*\(\s*"(?:[^"]*\b(?:not\s+implemented|stub|unimplemented|not\s+yet)\b[^"]*)"'
+        r'\bpanic\s*!\s*\(\s*"(?:[^"]*\b'
+        r'(?:not\s+implemented|stub|unimplemented|not\s+yet|missing)\b[^"]*)"'
     , re.IGNORECASE)),
+    # Type-system stub: function body is `Default::default()` only.
+    # The `_scan_default_default_body` helper catches this with fn context.
 ]
+
+
+def has_stub_for_fn(text: str, fn_name: str) -> bool:
+    """True if the source contains a stub (unimplemented!/todo!/panic!) that
+    mentions fn_name anywhere in the call, OR if any fn named fn_name has
+    a body whose canonical form is just a single stub macro.
+
+    Canonical form = whitespace-stripped, comment-stripped text.
+
+    Used by Phase D's post-fill revert check. Previously the check was an
+    exact-substring match on a hard-coded stub message, which missed:
+      - LLM rewording the stub message
+      - LLM using `todo!()` instead of `unimplemented!()`
+      - Extra whitespace inserted by formatter
+      - Comments embedded in the stub body
+    """
+    if not text:
+        return False
+    # Fast path: any unimplemented!/todo! call mentioning fn_name.
+    escaped = re.escape(fn_name)
+    inline = re.compile(
+        r"(?:unimplemented|todo|panic)\s*!\s*\([^)]*" + escaped,
+        re.IGNORECASE,
+    )
+    if inline.search(text):
+        return True
+    # Slow path: find every fn with this name and check its body's canonical
+    # form for a bare stub macro. Uses the full fn-span collector so we
+    # respect string/comment boundaries.
+    fn_spans = _collect_fn_spans(text)
+    for start, end, name in fn_spans:
+        if name != fn_name:
+            continue
+        body = text[start:end]
+        canonical = _canonicalize_body(body)
+        if _is_canonical_stub(canonical):
+            return True
+    return False
+
+
+def _canonicalize_body(body: str) -> str:
+    """Strip comments + collapse whitespace. Used for canonical stub match."""
+    # Drop block comments
+    body = re.sub(r"/\*[\s\S]*?\*/", " ", body)
+    # Drop line comments
+    body = re.sub(r"//[^\n]*", " ", body)
+    # Collapse whitespace
+    body = re.sub(r"\s+", "", body)
+    return body
+
+
+_CANONICAL_STUB_BODIES = [
+    # Pure macro calls with any content
+    re.compile(r"^unimplemented!\([^)]*\);?$"),
+    re.compile(r"^todo!\([^)]*\);?$"),
+    re.compile(r"^panic!\([^)]*\);?$"),
+    # `let _ = x;` N times then a stub macro
+    re.compile(r"^(?:let_=\w+;)+(?:unimplemented|todo|panic)!\([^)]*\);?$"),
+]
+
+
+def _is_canonical_stub(canonical_body: str) -> bool:
+    """True if the canonical (whitespace+comment-stripped) body is a stub."""
+    for pat in _CANONICAL_STUB_BODIES:
+        if pat.match(canonical_body):
+            return True
+    return False
 
 
 # Comment phrases the LLM uses when it gives up mid-generation.

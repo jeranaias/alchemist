@@ -651,10 +651,33 @@ def generate_crate_skeleton(
     # src/<module>.rs for each module
     for m in modules:
         mod_path = crate_dir / "src" / f"{m.name}.rs"
-        mod_path.write_text(
-            _module_rs_for(m, {}, dep_crate_names=list(crate_spec.dependencies)),
-            encoding="utf-8",
+        new_content = _module_rs_for(
+            m, {}, dep_crate_names=list(crate_spec.dependencies),
         )
+        # Phase 0 Bug #5: skeleton idempotency.
+        # If the file exists with IDENTICAL content, skip the write. This
+        # preserves the file's mtime and avoids invalidating any cached
+        # wins that rely on the skeleton's exact byte sequence. If the
+        # content differs, a sidecar .skeleton.meta.json records the new
+        # spec-hash so a later audit can tell the skeleton changed.
+        meta_path = mod_path.with_suffix(".rs.meta.json")
+        import hashlib as _hashlib
+        import json as _json
+        new_hash = _hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+        existing_content = mod_path.read_text(encoding="utf-8") if mod_path.exists() else None
+        if existing_content == new_content:
+            # No-op: identical skeleton. Still update the sidecar if missing.
+            if not meta_path.exists():
+                meta_path.write_text(
+                    _json.dumps({"skeleton_hash": new_hash}, indent=2),
+                    encoding="utf-8",
+                )
+        else:
+            mod_path.write_text(new_content, encoding="utf-8")
+            meta_path.write_text(
+                _json.dumps({"skeleton_hash": new_hash}, indent=2),
+                encoding="utf-8",
+            )
         result.files_written.append(mod_path)
 
     return result

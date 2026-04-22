@@ -10,6 +10,155 @@ import re
 from pathlib import Path
 
 
+def find_matching_brace(text: str, open_pos: int) -> int:
+    """Return the index of the `}` that closes the `{` at `open_pos`.
+
+    Rust-token-aware: skips braces inside
+      - `"..."` string literals (with `\"` escape)
+      - `'c'` char literals
+      - `b"..."` byte string literals
+      - `r"..."`, `r#"..."#` raw strings
+      - `//...` line comments
+      - `/* ... */` block comments (nestable per Rust spec)
+
+    Returns -1 if unmatched. Previously the naive brace counters in this
+    file and in tdd_generator miscounted when test bodies contained
+    braces inside string literals.
+    """
+    assert text[open_pos] == "{", "find_matching_brace: start must be `{`"
+    n = len(text)
+    i = open_pos + 1
+    depth = 1
+    while i < n and depth > 0:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        # Line comment
+        if ch == "/" and nxt == "/":
+            newline = text.find("\n", i + 2)
+            i = n if newline == -1 else newline + 1
+            continue
+        # Block comment (supports nesting)
+        if ch == "/" and nxt == "*":
+            i += 2
+            bdepth = 1
+            while i < n and bdepth > 0:
+                if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                    bdepth += 1
+                    i += 2
+                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    bdepth -= 1
+                    i += 2
+                else:
+                    i += 1
+            continue
+        # Raw string: r"...", r#"..."#, br"...", br#"..."#
+        if (ch == "r" or (ch == "b" and nxt == "r")) and _is_raw_string_start(text, i):
+            i = _skip_raw_string(text, i)
+            continue
+        # Byte string b"..."
+        if ch == "b" and nxt == '"':
+            i = _skip_string(text, i + 1, '"') + 1
+            continue
+        # Normal string
+        if ch == '"':
+            i = _skip_string(text, i, '"') + 1
+            continue
+        # Char literal 'x' or '\x' — but NOT lifetime like 'a (no closing quote)
+        if ch == "'" and _looks_like_char_literal(text, i):
+            i = _skip_string(text, i, "'") + 1
+            continue
+        # Braces
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _is_raw_string_start(text: str, i: int) -> bool:
+    # Match r"..." or r#"..." or br"..." or br#"..."
+    if text[i] == "b":
+        if i + 1 < len(text) and text[i + 1] == "r":
+            i += 2
+        else:
+            return False
+    elif text[i] == "r":
+        i += 1
+    else:
+        return False
+    # Now skip optional # chars, then require '"'
+    while i < len(text) and text[i] == "#":
+        i += 1
+    return i < len(text) and text[i] == '"'
+
+
+def _skip_raw_string(text: str, start: int) -> int:
+    i = start
+    if text[i] == "b":
+        i += 1
+    # i points to 'r'
+    i += 1
+    hashes = 0
+    while i < len(text) and text[i] == "#":
+        hashes += 1
+        i += 1
+    # opening '"'
+    if i >= len(text) or text[i] != '"':
+        return start + 1
+    i += 1
+    # consume until closing '"' followed by `hashes` '#'s
+    close_pattern = '"' + "#" * hashes
+    idx = text.find(close_pattern, i)
+    if idx == -1:
+        return len(text)
+    return idx + len(close_pattern)
+
+
+def _skip_string(text: str, start: int, quote: str) -> int:
+    """Return the index of the closing quote for a string starting at
+    `text[start] == quote`, handling `\\` escapes. The return value
+    points AT the closing quote (caller may want +1 to skip past it)."""
+    assert text[start] == quote
+    i = start + 1
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == quote:
+            return i
+        i += 1
+    return n - 1
+
+
+def _looks_like_char_literal(text: str, i: int) -> bool:
+    """True if `text[i] == "'"` opens a char literal (not a lifetime).
+
+    Char literals are `'x'`, `'\\n'`, `'\\x41'`, etc. Lifetimes are
+    `'a`, `'static`, never followed by a closing quote within a short
+    window. Heuristic: look ahead for a closing `'` within 10 chars of
+    non-alphanumeric content."""
+    n = len(text)
+    j = i + 1
+    if j >= n:
+        return False
+    # '\x' escape
+    if text[j] == "\\":
+        # scan ahead for closing '
+        k = j + 1
+        while k < n and k - j < 10 and text[k] != "'":
+            k += 1
+        return k < n and text[k] == "'"
+    # 'x' single char
+    if j + 1 < n and text[j + 1] == "'":
+        return True
+    return False
+
+
 # Common LLM typos — Rust-specific
 TYPO_FIXES = [
     # ##! → #! (crate-level attribute typo; model sometimes doubles #)
@@ -108,20 +257,16 @@ def scrub_rust(code: str) -> tuple[str, list[str]]:
     for m in const_redef.finditer(code):
         text = m.group(0)
         if "{" in text:
-            # Find matching close brace
+            # Find matching close brace (string/comment-aware via shared helper).
             start = code.find("{", m.start())
             if start >= 0:
-                depth = 1
-                i = start + 1
-                while i < len(code) and depth > 0:
-                    if code[i] == "{": depth += 1
-                    elif code[i] == "}": depth -= 1
-                    i += 1
-                # Remove from const keyword to closing };
-                end = code.find(";", i - 1)
-                if end >= 0:
-                    new_code = new_code.replace(code[m.start():end + 1], "")
-                    fixes.append(f"stripped redefined const {text[:40].strip()}")
+                close = find_matching_brace(code, start)
+                if close > 0:
+                    # Remove from const keyword to closing };
+                    end = code.find(";", close)
+                    if end >= 0:
+                        new_code = new_code.replace(code[m.start():end + 1], "")
+                        fixes.append(f"stripped redefined const {text[:40].strip()}")
         else:
             new_code = new_code.replace(text, "")
             fixes.append(f"stripped redefined const {text[:40].strip()}")
@@ -140,18 +285,19 @@ def scrub_rust(code: str) -> tuple[str, list[str]]:
     test_match = test_pattern.search(code)
     if test_match:
         test_start = test_match.start()
-        after = code[test_match.end():]
-        # Find matching closing brace for the mod block
-        brace_depth = 1
-        i = 0
-        while i < len(after) and brace_depth > 0:
-            ch = after[i]
-            if ch == "{":
-                brace_depth += 1
-            elif ch == "}":
-                brace_depth -= 1
-            i += 1
-        test_body = after[:i] if brace_depth == 0 else after[:i]
+        # The matched group ends at `{` — find its matching close brace
+        # via the shared string/comment-aware matcher.
+        open_brace = test_match.end() - 1
+        close_brace = find_matching_brace(code, open_brace)
+        if close_brace > 0:
+            test_body = code[open_brace + 1:close_brace]
+            brace_depth = 0
+            i = close_brace - open_brace  # for compat with the truncation check below
+        else:
+            # Unbalanced — treat the rest of the file as the body
+            test_body = code[open_brace + 1:]
+            brace_depth = 1
+            i = len(test_body)
         # Signs of truncation inside the test module:
         # - Line ending with `= b` (byte literal without content)
         # - Line ending with `"` (unclosed string)

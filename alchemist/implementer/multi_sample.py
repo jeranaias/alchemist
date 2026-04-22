@@ -23,7 +23,10 @@ the caller is told the sampling produced no usable candidate.
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -84,6 +87,44 @@ Splicer = Callable[[str], bool]
 Evaluator = Callable[[], tuple[bool, int, int, str]]
 
 
+class FileIntegrityError(RuntimeError):
+    """Raised when a post-candidate restore does not return the file to
+    its original byte-for-byte state. Indicates pipeline corruption —
+    never swallow.
+    """
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _atomic_write(file_path: Path, content: str) -> None:
+    """Write content to file_path atomically via temp+rename.
+
+    os.replace is atomic on both POSIX and Windows (Python 3.3+). Avoids
+    the window where a concurrent cargo reader observes a half-written
+    file, or where an exception mid-write leaves the file truncated.
+    """
+    # Same parent dir so rename is same-filesystem
+    parent = file_path.parent
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{file_path.stem}.", suffix=".candidate",
+        dir=str(parent),
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, str(file_path))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def run_multi_sample(
     *,
     sampler: Sampler,
@@ -99,7 +140,17 @@ def run_multi_sample(
 
     `reject_stub` is called on each candidate body; if it returns True the
     candidate is discarded before splicing.
+
+    File integrity invariant: when this function returns without a winner,
+    the file at `file_path` MUST contain `original_source` byte-for-byte.
+    Verified via SHA256 of the restored content. If it doesn't match, we
+    raise FileIntegrityError rather than silently continuing — that's a
+    corruption bug the caller needs to surface.
     """
+    # Invariant: snapshot the source hash now. Any restore path must
+    # re-establish this exact byte sequence.
+    original_hash = _sha256_bytes(original_source.encode("utf-8"))
+
     # 1. Fan out — produce all candidates in parallel.
     candidates: list[tuple[int, str]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -116,38 +167,77 @@ def run_multi_sample(
                 candidates.append((idx, body))
 
     if not candidates:
+        _verify_restored(file_path, original_source, original_hash)
         return MultiSampleResult(all_failed=True)
 
-    # 2. Evaluate each candidate serially (cargo check/test isn't safe to parallelize
-    #    on a single workspace — they'd race on target/).
+    # 2. Evaluate each candidate serially (cargo check/test isn't safe to
+    #    parallelize on a single workspace — they'd race on target/).
+    #    Each candidate: atomic splice → evaluate → atomic restore.
+    #    If ANY step raises, we restore and re-raise. Never leave the
+    #    file in a candidate state.
     scores: list[SampleScore] = []
     for idx, body in candidates:
-        ok_splice = splicer(body)
-        if not ok_splice:
-            continue
-        compiled, passed, failed, err = evaluator()
-        scores.append(SampleScore(
-            candidate_idx=idx,
-            body=body,
-            compiled=compiled,
-            tests_passed=passed,
-            tests_failed=failed,
-            length=len(body),
-            error_summary=err,
-        ))
-        # Restore original between candidates so later ones don't stack on
-        # the previous one's (potentially broken) output.
-        file_path.write_text(original_source, encoding="utf-8")
+        try:
+            ok_splice = splicer(body)
+            if not ok_splice:
+                continue
+            compiled, passed, failed, err = evaluator()
+            scores.append(SampleScore(
+                candidate_idx=idx,
+                body=body,
+                compiled=compiled,
+                tests_passed=passed,
+                tests_failed=failed,
+                length=len(body),
+                error_summary=err,
+            ))
+        finally:
+            # Always restore the original — whether eval passed, failed,
+            # or raised. Atomic so a concurrent cargo worker reading the
+            # file sees either the candidate or the original, never half.
+            _atomic_write(file_path, original_source)
+
+    # Verify the restore actually happened — defence in depth.
+    _verify_restored(file_path, original_source, original_hash)
 
     if not scores:
         return MultiSampleResult(all_failed=True)
 
     # 3. Pick the winner.
     best = max(scores, key=lambda s: s.score())
-    # Write the winner back.
+    # Write the winner back (non-atomic splicer call preserves the
+    # caller's splice semantics — caller writes the fn body in-place).
     splicer(best.body)
 
     return MultiSampleResult(best=best, scores=scores, all_failed=not best.compiled)
+
+
+def _verify_restored(
+    file_path: Path, original_source: str, original_hash: str,
+) -> None:
+    """Ensure the file is back to its original bytes after multi-sample.
+
+    Raises FileIntegrityError if not. This is a hard gate — silently
+    continuing past corrupted source has historically cascaded into
+    whole-crate splice failures (see Phase 0 audit bug #2).
+    """
+    try:
+        current = file_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as e:
+        raise FileIntegrityError(
+            f"multi-sample restore check: cannot read {file_path}: {e}"
+        ) from e
+    current_hash = _sha256_bytes(current.encode("utf-8"))
+    if current_hash != original_hash:
+        # Last-ditch rescue: force-write original again, then raise.
+        try:
+            _atomic_write(file_path, original_source)
+        except Exception:  # noqa: BLE001
+            pass
+        raise FileIntegrityError(
+            f"multi-sample restore FAILED to match original at {file_path}: "
+            f"expected sha256={original_hash[:12]}, got {current_hash[:12]}"
+        )
 
 
 # ---------------------------------------------------------------------------

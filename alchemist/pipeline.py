@@ -414,6 +414,45 @@ def run_translate_all(
     out = output or (checkpoint / "output")
     report = TranslationReport(workspace_dir=out)
 
+    # Phase 0 Bug #8: workspace mutex. Two concurrent pipelines on the
+    # same subject race on output/, wins/, and target/. Acquire an
+    # advisory lock; fail loudly if another live process holds it.
+    from alchemist.workspace_lock import workspace_lock, WorkspaceLockError
+    try:
+        _lock_cm = workspace_lock(source, timeout=10.0)
+        _lock_cm.__enter__()
+    except WorkspaceLockError as e:
+        report.add(StageOutcome(
+            stage="lock", ok=False,
+            summary=f"workspace lock acquisition failed: {e}",
+        ))
+        return report
+
+    try:
+        return _run_translate_all_locked(
+            source, name, out, checkpoint, report, config,
+            stages, diff_config, enforce_validator, refuse_without_diff,
+        )
+    finally:
+        try:
+            _lock_cm.__exit__(None, None, None)
+        except Exception:
+            pass
+
+
+def _run_translate_all_locked(
+    source: Path,
+    name: str,
+    out: Path,
+    checkpoint: Path,
+    report,
+    config,
+    stages: tuple[int, int],
+    diff_config,
+    enforce_validator: bool,
+    refuse_without_diff: bool,
+):
+    """Body of run_translate_all, executed under workspace_lock."""
     start_stage, end_stage = stages
 
     # --- Stage 1: Analyze ---

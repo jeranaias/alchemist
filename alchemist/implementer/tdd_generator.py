@@ -313,12 +313,46 @@ class TDDGenerator:
         self, workspace_dir: Path, crate: str, module: str, fn_name: str,
         fn_body: str,
     ) -> None:
+        """Persist a verified-winning impl to the cache.
+
+        Previously swallowed all exceptions silently — disk full, perms,
+        or path issues would silently stop the cache from accumulating.
+        Now: log + re-raise on failure, with round-trip verify to catch
+        partial writes.
+        """
         p = self._wins_cache_path(workspace_dir, crate, module, fn_name)
-        try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(fn_body, encoding="utf-8")
-        except Exception:
-            pass
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(fn_body, encoding="utf-8")
+        # Round-trip verify: the wins cache is load-bearing for monotonic
+        # progress. A silently-truncated write means next-run cache restore
+        # fails → iterate → maybe-regress. Loud failure is better.
+        readback = p.read_text(encoding="utf-8")
+        if readback != fn_body:
+            raise RuntimeError(
+                f"wins cache write verify FAILED: {p} "
+                f"(wrote {len(fn_body)} bytes, read back {len(readback)})"
+            )
+
+    def _verify_cached_win_twice(
+        self, crate_dir: Path, test_name_prefix: str,
+    ) -> tuple[bool, int]:
+        """Run the test filter twice. Returns (ok, total_tests_observed).
+
+        A cached win that passes once but fails once is flaky — caching
+        it pollutes the cache and poisons later runs. Require 2-for-2.
+        """
+        total_tests = 0
+        for attempt_idx in range(2):
+            ok, tout, terr = _run_cargo_test_filter(crate_dir, test_name_prefix)
+            combined = (tout or "") + "\n" + (terr or "")
+            import re as _re
+            ran_counts = [int(m) for m in _re.findall(
+                r"running\s+(\d+)\s+tests?", combined
+            )]
+            if not ok or not any(n > 0 for n in ran_counts):
+                return False, total_tests
+            total_tests = max(total_tests, sum(ran_counts))
+        return True, total_tests
 
     def _fill_in_function(
         self,
@@ -353,20 +387,18 @@ class TDDGenerator:
                 ok_compile, _ = _run_cargo_check(crate_dir, timeout=180)
                 if ok_compile:
                     test_name_prefix = f"test_{alg.name}_"
-                    ok_test, tout, terr = _run_cargo_test_filter(
+                    # 2x verify at restore: a flaky cached impl poisons
+                    # progress. Both runs must pass with >0 tests observed.
+                    ok_twice, total_tests = self._verify_cached_win_twice(
                         crate_dir, test_name_prefix,
                     )
-                    combined = (tout or "") + "\n" + (terr or "")
-                    import re as _re
-                    ran_counts = [int(m) for m in _re.findall(
-                        r"running\s+(\d+)\s+tests?", combined
-                    )]
-                    if ok_test and any(n > 0 for n in ran_counts):
+                    if ok_twice and total_tests > 0:
                         attempt.iterations = 0
                         attempt.final_compiled = True
                         attempt.tests_passed = True
                         console.print(
-                            f"  [green]{alg.name}: cached win restored (0 LLM calls)[/green]"
+                            f"  [green]{alg.name}: cached win restored "
+                            f"(0 LLM calls, 2x verified, {total_tests} tests)[/green]"
                         )
                         return attempt
                 # Cached win didn't hold — revert and fall through to iteration
@@ -419,17 +451,34 @@ class TDDGenerator:
                     )]
                     had_real_tests = any(n > 0 for n in ran_counts)
                     if ok_test and had_real_tests:
-                        attempt.iterations = 0
-                        attempt.final_compiled = True
-                        attempt.tests_passed = True
-                        self._save_cached_win(
-                            workspace_dir, crate_spec.name, module.name,
-                            alg.name, template_code,
+                        # 2x verify before caching — one flaky pass
+                        # poisons next-run restore
+                        ok_twice, _ = self._verify_cached_win_twice(
+                            crate_dir, test_name_prefix,
                         )
-                        console.print(
-                            f"  [green]{alg.name}: init template + tests pass[/green]"
-                        )
-                        return attempt
+                        if not ok_twice:
+                            console.print(
+                                f"  [yellow]{alg.name}: init template passed once "
+                                f"but not twice — treating as iter fail[/yellow]"
+                            )
+                            module_path.write_text(current, encoding="utf-8")
+                        else:
+                            attempt.iterations = 0
+                            attempt.final_compiled = True
+                            attempt.tests_passed = True
+                            try:
+                                self._save_cached_win(
+                                    workspace_dir, crate_spec.name, module.name,
+                                    alg.name, template_code,
+                                )
+                            except Exception as e:  # noqa: BLE001
+                                console.print(
+                                    f"  [red]{alg.name}: cache save failed: {e}[/red]"
+                                )
+                            console.print(
+                                f"  [green]{alg.name}: init template + 2x tests pass[/green]"
+                            )
+                            return attempt
                     if not ok_test:
                         # Template compiled but tests failed — revert and
                         # let LLM iteration take over
@@ -475,6 +524,17 @@ class TDDGenerator:
                     and ms.best.tests_failed == 0
                     and ms.best.tests_passed >= 1
                 ):
+                    # 2x verify the multi-sample winner before declaring
+                    # success. ms's evaluator only tested once per candidate.
+                    ok_twice, _ = self._verify_cached_win_twice(
+                        crate_dir, test_name_prefix,
+                    )
+                    if not ok_twice:
+                        console.print(
+                            f"  [yellow]{alg.name}: multi-sample passed once "
+                            f"but not twice — iter continues[/yellow]"
+                        )
+                        continue
                     attempt.final_compiled = True
                     attempt.tests_passed = True
                     # Snapshot the winning function body from the module file.
@@ -486,8 +546,10 @@ class TDDGenerator:
                                 workspace_dir, crate_spec.name, module.name,
                                 alg.name, final_body,
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:  # noqa: BLE001
+                        console.print(
+                            f"  [red]{alg.name}: cache save failed: {e}[/red]"
+                        )
                     console.print(
                         f"  [green]{alg.name}: multi-sample win on iter {iteration} "
                         f"(candidate #{ms.best.candidate_idx})[/green]"
@@ -600,15 +662,31 @@ class TDDGenerator:
             )]
             had_real_tests = any(n > 0 for n in ran_counts)
             if ok_test and had_real_tests:
+                # 2x verify before caching — prevents flaky passes from
+                # polluting the cache. Both runs must return ok + >0 tests.
+                ok_twice, _ = self._verify_cached_win_twice(
+                    crate_dir, test_name_prefix,
+                )
+                if not ok_twice:
+                    console.print(
+                        f"  [yellow]{alg.name}: iter {iteration} passed once "
+                        f"but not twice — iter continues[/yellow]"
+                    )
+                    continue
                 attempt.tests_passed = True
                 # Persist the winning body so the next run skips iteration
                 # for this function (huge accumulation effect across runs).
                 if new_fn:
-                    self._save_cached_win(
-                        workspace_dir, crate_spec.name, module.name,
-                        alg.name, new_fn,
-                    )
-                console.print(f"  [green]{alg.name}: tests pass on iter {iteration}[/green]")
+                    try:
+                        self._save_cached_win(
+                            workspace_dir, crate_spec.name, module.name,
+                            alg.name, new_fn,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        console.print(
+                            f"  [red]{alg.name}: cache save failed: {e}[/red]"
+                        )
+                console.print(f"  [green]{alg.name}: tests pass on iter {iteration} (2x verified)[/green]")
                 return attempt
 
             # No tests matched this function's prefix — P2 violation to
@@ -1077,33 +1155,25 @@ class TDDGenerator:
         m = pat.search(text)
         if not m:
             return None
-        sig_end = m.end()  # position of `{`
-        # Find matching close
-        depth = 1
-        i = sig_end
-        n = len(text)
-        while i < n and depth > 0:
-            ch = text[i]
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    body_end = i
-                    # Include trailing newline if present
-                    item_end = body_end + 1
-                    if item_end < n and text[item_end] == "\n":
-                        item_end += 1
-                    # item_start: back up to include attrs/doc
-                    item_start = m.start()
-                    return dict(
-                        item_start=item_start,
-                        body_start=sig_end,
-                        body_end=body_end,
-                        item_end=item_end,
-                    )
-            i += 1
-        return None
+        sig_end = m.end()  # position just past the `{` matched by _FN_BLOCK_RE
+        # _FN_BLOCK_RE's last token is `{`, so sig_end - 1 is the `{`.
+        # Use string/comment-aware brace matching via the shared helper
+        # (Phase 0 Bug #4: naive counter miscounted braces inside strings).
+        from alchemist.implementer.scrubber import find_matching_brace
+        open_brace = sig_end - 1
+        body_end = find_matching_brace(text, open_brace)
+        if body_end < 0:
+            return None
+        # Include trailing newline if present
+        item_end = body_end + 1
+        if item_end < len(text) and text[item_end] == "\n":
+            item_end += 1
+        return dict(
+            item_start=m.start(),
+            body_start=sig_end,
+            body_end=body_end,
+            item_end=item_end,
+        )
 
     def _holistic_fix(self, crate_dir: Path, alg: AlgorithmSpec, error_ctx: str) -> None:
         """Escalation tier: whole-crate fix via the holistic fixer."""
@@ -1177,9 +1247,16 @@ class TDDGenerator:
             )
             # If the fill failed, the stub is still in the file. Revert it
             # rather than leave an unimplemented!() body in the output.
+            #
+            # Prior bug: exact-string match on the stub message missed
+            # - LLM rewording to `todo!("fixme")` or similar
+            # - Whitespace changes from rustfmt
+            # - Multi-statement bodies wrapping the stub
+            # has_stub_for_fn handles all three via regex + canonical match.
             if not fill_attempt.tests_passed:
                 after = module_path.read_text(encoding="utf-8")
-                if f"unimplemented!(\"missing fn: {miss.c_function}\")" in after:
+                from alchemist.implementer.anti_stub import has_stub_for_fn
+                if has_stub_for_fn(after, miss.c_function):
                     # Stub survived — strip it and restore prior content
                     module_path.write_text(existing, encoding="utf-8")
                     console.print(
