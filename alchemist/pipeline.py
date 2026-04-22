@@ -201,19 +201,51 @@ def run_architect_stage(
         ModuleSpec.model_validate(json.loads(f.read_text(encoding="utf-8")))
         for f in sorted(specs_dir.glob("*.json"))
     ]
-    designer = CrateDesigner(config or AlchemistConfig())
-    arch = designer.design(specs, project_name=name, source_description=str(source))
+    # Cache-load: architecture is a one-shot LLM call that doesn't benefit
+    # from re-running once the shape is stable. If architecture.json exists
+    # and parses cleanly, re-use it. This also means a transient LLM hiccup
+    # during architect stage doesn't nuke the whole run.
+    arch_path = source / ".alchemist" / "architecture.json"
+    arch: "CrateArchitecture | None" = None
+    if arch_path.exists():
+        try:
+            arch = CrateArchitecture.model_validate_json(
+                arch_path.read_text(encoding="utf-8")
+            )
+            console.print(
+                f"[cyan]architect: cache hit at {arch_path.name} "
+                f"({len(arch.crates)} crates) — skipping LLM call[/cyan]"
+            )
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                f"[yellow]architect cache parse failed ({e}); "
+                f"regenerating via LLM[/yellow]"
+            )
+            arch = None
+    if arch is None:
+        designer = CrateDesigner(config or AlchemistConfig())
+        arch = designer.design(specs, project_name=name, source_description=str(source))
 
     # Post-architect trait extraction: fill in traits for compatible-signature
     # families the architect might have missed. Phase 0.5 requirement 4.
+    # Dedupe by name: a cached arch may already carry traits from a prior run,
+    # and extract_traits runs deterministically over the same specs, so it
+    # would otherwise duplicate them on every invocation.
     from alchemist.architect.trait_extractor import extract_traits
     new_traits = extract_traits(specs, arch)
     if new_traits:
-        arch.traits = list(arch.traits) + new_traits
-        console.print(
-            f"[cyan]trait extractor: added {len(new_traits)} trait(s): "
-            f"{', '.join(t.name for t in new_traits)}[/cyan]"
-        )
+        existing_names = {t.name for t in (arch.traits or [])}
+        added: list = []
+        for t in new_traits:
+            if t.name not in existing_names:
+                added.append(t)
+                existing_names.add(t.name)
+        if added:
+            arch.traits = list(arch.traits or []) + added
+            console.print(
+                f"[cyan]trait extractor: added {len(added)} trait(s): "
+                f"{', '.join(t.name for t in added)}[/cyan]"
+            )
 
     (source / ".alchemist" / "architecture.json").write_text(
         arch.model_dump_json(indent=2), encoding="utf-8"

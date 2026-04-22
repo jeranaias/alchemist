@@ -585,24 +585,42 @@ def _lib_rs_for(
     if module_names:
         lines.append("")
     # Auto-import types from dependency crates that traits/error types
-    # in THIS crate reference. Scans trait method signatures and error
-    # variant fields for type names defined in other crates' error_types.
-    if dep_crate_names and all_error_types:
+    # in THIS crate reference.
+    #
+    # Two-tier strategy:
+    #   1. Shared-types crates (named "*-types" or with `types` as their
+    #      only module) export everything via a glob re-export. Every other
+    #      crate in the workspace depends on this shape, and the traits
+    #      emitted here routinely reference types like `TreeElement`,
+    #      `DeflateState`, etc. that aren't in public_api but are in the
+    #      types module. A glob re-export is the simplest correct answer.
+    #   2. For non-types dep crates, fall back to the targeted import of
+    #      named error types referenced by this crate's traits.
+    if dep_crate_names:
         imported: set[str] = set()
-        # Collect type names defined in dependency crates
-        dep_type_names: dict[str, str] = {}  # type_name -> crate_name
-        for et in all_error_types:
-            if et.crate != crate.name and et.crate in set(dep_crate_names):
-                dep_type_names[et.name] = et.crate
-        # Scan this crate's traits for references to those types
-        for t in traits:
-            for m in t.methods:
-                sig = m.signature
-                for type_name, dep_crate in dep_type_names.items():
-                    if type_name in sig and type_name not in imported:
-                        rust_crate = dep_crate.replace("-", "_")
-                        lines.append(f"pub use {rust_crate}::{type_name};")
-                        imported.add(type_name)
+        for dep in dep_crate_names:
+            # Heuristic: treat crates named "<prefix>-types" (or whose sole
+            # module is "types") as the shared-types crate. Glob-import them.
+            if dep.endswith("-types") or dep == "types":
+                rust_crate = dep.replace("-", "_")
+                lines.append(f"pub use {rust_crate}::*;")
+                imported.add(f"*::{rust_crate}")
+        if all_error_types:
+            dep_type_names: dict[str, str] = {}
+            types_crates = {d for d in dep_crate_names if d.endswith("-types")}
+            for et in all_error_types:
+                if (et.crate != crate.name
+                    and et.crate in set(dep_crate_names)
+                    and et.crate not in types_crates):
+                    dep_type_names[et.name] = et.crate
+            for t in traits:
+                for m in t.methods:
+                    sig = m.signature
+                    for type_name, dep_crate in dep_type_names.items():
+                        if type_name in sig and type_name not in imported:
+                            rust_crate = dep_crate.replace("-", "_")
+                            lines.append(f"pub use {rust_crate}::{type_name};")
+                            imported.add(type_name)
         if imported:
             lines.append("")
     # Trait definitions

@@ -392,15 +392,26 @@ def _emit_state_observer_test(fn_name: str, vec: SpecTestVector, idx: int) -> st
     """Emit a test for a state-observer function.
 
     Shape: read-only `&DeflateState` (or similar) → scalar return.
-    Input dict has keys `state.<field>` (same as state-mutator).
     Expected output is a single rendered literal (e.g., "0i32").
 
-    The test sets up a fresh DeflateState, populates the pre-state fields,
-    calls the fn, and asserts the return value equals expected.
+    Vectors carry pre-rendered Rust statements under `__stmt__<N>` keys
+    (preferred) or legacy `state.<field>` keys (simple assignment). The
+    `__stmt__` form lets the binding translate between the shim's flat
+    field view (dyn_ltree_freq: Vec<u16>) and the Rust struct layout
+    (dyn_ltree: Vec<(u16, u16)>).
     """
     test_name = f"test_{fn_name}_observer_{idx}"
     lines = [f"    #[test]\n    fn {test_name}() {{\n"]
     lines.append("        let mut state = zlib_types::DeflateState::default();\n")
+    # Pre-rendered statements (__stmt__0, __stmt__1, ...) take priority
+    stmt_items = sorted(
+        ((k, v) for k, v in vec.inputs.items() if k.startswith("__stmt__")),
+        key=lambda kv: int(kv[0][len("__stmt__"):])
+        if kv[0][len("__stmt__"):].isdigit() else 0,
+    )
+    for _, stmt in stmt_items:
+        lines.append(f"        {stmt}\n")
+    # Legacy path: plain `state.<field>` simple assignment
     for pname, pvalue in vec.inputs.items():
         if pname.startswith("state."):
             field_name = pname[len("state."):]

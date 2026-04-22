@@ -51,12 +51,24 @@ class CShimField:
     is_u16_buf: bool = False
     # Variable-length output buffer size (default equals SHIM_BUF_SIZE)
     max_len: int = SHIM_BUF_SIZE
+    # Rust-side struct field name (defaults to `name`). Used when the shim's
+    # flat field identifier ("dyn_ltree_freq") differs from the Rust struct
+    # field ("dyn_ltree"). Only used by the Rust test emitter.
+    rust_field: str = ""
+    # Optional expression template for writing the fuzzed value into the
+    # Rust struct. `{val}` is replaced with the rendered Rust literal for
+    # the fuzzed value. Default: `state.<rust_field> = {val}`. Use when the
+    # shim's flat view needs restructuring (e.g., Vec<u16> freqs → Vec<(u16,u16)>).
+    rust_write_template: str = ""
 
     def resolved_setter(self) -> str:
         return self.setter or f"shim_set_{self.name}"
 
     def resolved_getter(self) -> str:
         return self.getter or f"shim_get_{self.name}"
+
+    def resolved_rust_field(self) -> str:
+        return self.rust_field or self.name
 
 
 @dataclass
@@ -337,11 +349,21 @@ def fuzz_observer_shim(
         ret = runner()
         if hasattr(ret, "value"):
             ret = ret.value
+        # Render inputs. If a field declares `rust_write_template`, the
+        # template governs how the Rust test writes the value into the
+        # struct (used when the shim's flat field view doesn't match the
+        # Rust struct layout). Otherwise, the default is
+        # `state.<rust_field> = <rendered_value>`. The test emitter receives
+        # the fully-rendered STATEMENT, keyed `__stmt__<idx>`, so downstream
+        # code doesn't have to know about the field mapping.
         rendered_inputs: dict[str, str] = {}
-        for fs in binding.fields:
-            rendered_inputs[f"state.{fs.name}"] = _render_value(
-                pre_values[fs.name], fs.rust_type,
-            )
+        for idx, fs in enumerate(binding.fields):
+            rendered_val = _render_value(pre_values[fs.name], fs.rust_type)
+            if fs.rust_write_template:
+                stmt = fs.rust_write_template.format(val=rendered_val)
+            else:
+                stmt = f"state.{fs.resolved_rust_field()} = {rendered_val};"
+            rendered_inputs[f"__stmt__{idx}"] = stmt
         expected = _render_value(int(ret), binding.return_rust_type)
         vectors.append(SpecTestVector(
             description=f"c_shim_observer_{i}",
@@ -394,7 +416,11 @@ ZLIB_SHIM_OBSERVER_BINDINGS: dict[str, CShimObserverBinding] = {
         runner="shim_run_detect_data_type_ret",
         fields=[
             # dyn_ltree[i].Freq is the only state this function inspects.
-            # The shim exposes shim_set_dyn_ltree_freq which takes (ptr, n).
+            # The shim's flat API sees a Vec<u16> of frequencies; Rust's
+            # DeflateState lays it out as Vec<(u16, u16)> = (freq, len).
+            # `rust_write_template` bridges the shapes: fuzz Vec<u16>,
+            # then widen into tuples where length defaults to 0 (fn only
+            # inspects freq, so len is irrelevant for the test).
             CShimField(
                 "dyn_ltree_freq",
                 "Vec<u16>",
@@ -404,6 +430,11 @@ ZLIB_SHIM_OBSERVER_BINDINGS: dict[str, CShimObserverBinding] = {
                 getter="shim_set_dyn_ltree_freq",
                 is_u16_buf=True,
                 max_len=128,
+                rust_field="dyn_ltree",
+                rust_write_template=(
+                    "state.dyn_ltree = {val}.iter()"
+                    ".map(|&f| (f, 0u16)).collect();"
+                ),
             ),
         ],
         return_restype=ctypes.c_int,
