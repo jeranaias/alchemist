@@ -203,6 +203,10 @@ def _fn_signature(alg: AlgorithmSpec) -> str:
         name = _sanitize_param_name(p.name, i + len(alg.inputs))
         params.append(f"{name}: {rust_type}")
     ret = _sanitize_rust_type(alg.return_type.strip() or "()")
+    # Return types with a bare `&T` reference need a lifetime. Since
+    # zlib's get_crc_table (and siblings) return pointers to static data,
+    # 'static is the only sound default and is what the C semantics match.
+    ret = re.sub(r"^&(?!\s*'|\s*mut)", "&'static ", ret)
     if ret == "()" or ret == "":
         return f"pub fn {_snake(alg.name)}({', '.join(params)})"
     return f"pub fn {_snake(alg.name)}({', '.join(params)}) -> {ret}"
