@@ -72,6 +72,26 @@ def _apply_type_aliases(rust_type: str) -> str:
     return out
 
 
+def _strip_union_type(rust_type: str) -> str:
+    """Sanitize LLM-produced `T1 | T2 | T3` union-style rust_type strings.
+
+    The extractor LLM occasionally writes Python-style type unions for
+    platform-dependent types (`z_word_t` → `u32 | u64`) or status-code
+    returns (`bool | i32`). Rust has no pipe-union syntax — the skeleton
+    generator pastes the string verbatim, producing a compile error.
+
+    Heuristic: pick the LAST option. It is usually the more specific or
+    wider type across the patterns we've observed (u64 over u32 for
+    64-bit-default z_word_t; i32 over bool for status codes).
+    """
+    if "|" not in rust_type:
+        return rust_type
+    parts = [p.strip() for p in rust_type.split("|") if p.strip()]
+    if not parts:
+        return rust_type
+    return parts[-1]
+
+
 def _infer_module_state_type(module_name: str) -> str | None:
     """Given a module name, return the canonical state type for its functions.
 
@@ -113,10 +133,15 @@ def normalize_spec(
     new_inputs: list[Parameter] = []
     for p in spec.inputs or []:
         t_raw = (p.rust_type or "").strip()
+        # Strip Python-style `T1 | T2` union notation before anything else;
+        # Rust has no pipe-union and the skeleton would paste it verbatim.
+        t_no_union = _strip_union_type(t_raw)
+        if t_no_union != t_raw:
+            notes.append(f"{spec.name}::{p.name}: {t_raw} → {t_no_union} (union)")
         # Apply type-alias rewrites first so subsequent rules see real Rust types.
-        t = _apply_type_aliases(t_raw)
-        if t != t_raw:
-            notes.append(f"{spec.name}::{p.name}: {t_raw} → {t} (alias)")
+        t = _apply_type_aliases(t_no_union)
+        if t != t_no_union:
+            notes.append(f"{spec.name}::{p.name}: {t_no_union} → {t} (alias)")
         # Module-scoped state-type correction (file-path-driven, authoritative
         # for Deflate/Inflate confusion).
         t_before_mod = t
@@ -176,12 +201,15 @@ def normalize_spec(
         else:
             new_inputs.append(p)
 
-    # Return type: apply type aliases first (z_stream, uLong, etc.), then
-    # the Result<u64,_> heuristic.
+    # Return type: strip union notation, apply type aliases (z_stream,
+    # uLong, etc.), then the Result<u64,_> heuristic.
     orig_ret = spec.return_type or ""
-    new_ret = _apply_type_aliases(orig_ret)
-    if new_ret != orig_ret:
-        notes.append(f"{spec.name}: return {orig_ret} → {new_ret} (alias)")
+    ret_no_union = _strip_union_type(orig_ret)
+    if ret_no_union != orig_ret:
+        notes.append(f"{spec.name}: return {orig_ret} → {ret_no_union} (union)")
+    new_ret = _apply_type_aliases(ret_no_union)
+    if new_ret != ret_no_union:
+        notes.append(f"{spec.name}: return {ret_no_union} → {new_ret} (alias)")
     new_ret_before_mod = new_ret
     new_ret = _module_state_correction(spec, new_ret, module_state_type)
     if new_ret != new_ret_before_mod:
