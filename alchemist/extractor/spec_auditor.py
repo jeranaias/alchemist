@@ -115,6 +115,70 @@ def _infer_module_role(module_name: str) -> str | None:
     return None
 
 
+_C_RETURN_TO_RUST: dict[str, str] = {
+    "void": "()",
+    "int": "i32",
+    "unsigned int": "u32",
+    "unsigned": "u32",
+    "short": "i16",
+    "unsigned short": "u16",
+    "long": "i64",
+    "unsigned long": "u64",
+    "long long": "i64",
+    "unsigned long long": "u64",
+    "char": "u8",
+    "unsigned char": "u8",
+    "signed char": "i8",
+    "size_t": "usize",
+    "uint8_t": "u8",
+    "uint16_t": "u16",
+    "uint32_t": "u32",
+    "uint64_t": "u64",
+    "int8_t": "i8",
+    "int16_t": "i16",
+    "int32_t": "i32",
+    "int64_t": "i64",
+    # zlib typedefs
+    "uInt": "u32",
+    "uLong": "u64",
+    "ush": "u16",
+    "ulg": "u64",
+    "Byte": "u8",
+    "Bytef": "u8",
+    "z_word_t": "u32",
+    "z_off_t": "i64",
+    "z_size_t": "usize",
+}
+
+
+def _c_return_to_rust(c_ret: str) -> str | None:
+    """Map a C return type (possibly with qualifiers) to its Rust equivalent.
+
+    Strips common calling-convention / visibility qualifiers (ZEXPORT,
+    ZLIB_INTERNAL, local, static, const) and looks up the remaining base
+    type. Returns None when the type isn't understood.
+    """
+    import re as _re
+    if not c_ret:
+        return None
+    s = c_ret.strip()
+    # Strip qualifiers
+    for qual in (
+        "ZEXPORT", "ZEXPORTVA", "ZLIB_INTERNAL", "local", "static",
+        "extern", "inline",
+    ):
+        s = _re.sub(rf"\b{qual}\b", "", s)
+    s = _re.sub(r"\bconst\b", "", s)
+    s = _re.sub(r"\s+", " ", s).strip()
+    # Pointer return → drop pointer (Rust would need &/&mut wrapping, which
+    # we don't emit for returns). Let the caller handle pointer returns.
+    if "*" in s:
+        return None
+    if not s:
+        return None
+    return _C_RETURN_TO_RUST.get(s)
+
+
 def _c_first_param_to_rust(
     c_param: str, module_role: str | None = None,
 ) -> str | None:
@@ -222,19 +286,67 @@ def audit_module(
                 # choice. The C pointer type doesn't distinguish read-only
                 # from read-write; specs authored by the hardport or a
                 # human review may know better than the auditor's default.
-                if _only_mutability_diff(first.rust_type, expected):
-                    continue
+                if not _only_mutability_diff(first.rust_type, expected):
+                    findings.append(AuditFinding(
+                        module=module.name,
+                        fn_name=alg.name,
+                        param_name=first.name,
+                        issue="first_param_type_mismatch",
+                        current=first.rust_type,
+                        expected=expected,
+                        severity="error",
+                        auto_fix=True,
+                    ))
+        # Check return type vs spec's return_type. Auto-fix only the
+        # UNAMBIGUOUS cases — notably detect_data_type's `int` return
+        # that the LLM inferred as `u8`. Size-class flips (u32↔u64) are
+        # ambiguous on zlib's `uLong` (which is 32-bit on LP64 Windows
+        # but 64-bit on Unix) and the spec's value is often correct —
+        # skip those to avoid breaking hardports that already use u32.
+        spec_ret = (alg.return_type or "").strip()
+        expected_ret = _c_return_to_rust(c_ret)
+        if expected_ret and spec_ret and spec_ret != expected_ret:
+            if _is_unambiguous_return_fix(spec_ret, expected_ret):
                 findings.append(AuditFinding(
                     module=module.name,
                     fn_name=alg.name,
-                    param_name=first.name,
-                    issue="first_param_type_mismatch",
-                    current=first.rust_type,
-                    expected=expected,
+                    param_name="",
+                    issue="return_type_mismatch",
+                    current=spec_ret,
+                    expected=expected_ret,
                     severity="error",
                     auto_fix=True,
                 ))
     return findings
+
+
+def _is_unambiguous_return_fix(spec_ret: str, expected_ret: str) -> bool:
+    """Decide whether auto-correcting spec_ret → expected_ret is safe.
+
+    SAFE to fix:
+      bool → i32    (status codes)
+      u8/u16 → i32  (spec narrowed an `int` to a smaller unsigned)
+      X → ()        (spec invented a return for a void fn)
+
+    UNSAFE (skip):
+      u32 ↔ u64     (ambiguous — zlib's uLong varies by platform)
+      Result/Option/& wrappers     (higher-level types the auditor can't judge)
+    """
+    s, e = spec_ret.strip(), expected_ret.strip()
+    if any(x in s for x in ("Result", "Option", "<", "&")):
+        return False
+    # Cross-width unsigned-signed-unsigned flips are noisy; skip.
+    if {s, e} == {"u32", "u64"} or {s, e} == {"u64", "u32"}:
+        return False
+    if {s, e} == {"i32", "i64"} or {s, e} == {"i64", "i32"}:
+        return False
+    # Cases we DO want to fix.
+    if s in ("bool", "u8", "u16") and e == "i32":
+        return True
+    if s in ("u32", "u64", "i32", "i64", "bool") and e == "()":
+        return True
+    # Conservative default: skip everything else.
+    return False
 
 
 def _only_mutability_diff(current: str, expected: str) -> bool:
@@ -271,21 +383,37 @@ def apply_auto_fixes(
         for f in report.findings
         if f.auto_fix
     }
+    # Index ALL fixable findings per (module, fn), not just first-param.
+    fixes_by_key: dict[tuple[str, str], list[AuditFinding]] = {}
+    for f in report.findings:
+        if f.auto_fix:
+            fixes_by_key.setdefault((f.module, f.fn_name), []).append(f)
     out: list[ModuleSpec] = []
     for m in modules:
         new_algs: list[AlgorithmSpec] = []
         for alg in m.algorithms or []:
-            f = fixes_by_fn.get((m.name, alg.name))
-            if f and f.issue == "first_param_type_mismatch" and alg.inputs:
-                new_inputs = list(alg.inputs)
-                new_inputs[0] = new_inputs[0].model_copy(
-                    update={"rust_type": f.expected},
-                )
-                new_algs.append(alg.model_copy(update={"inputs": new_inputs}))
-            else:
-                new_algs.append(alg)
+            fs = fixes_by_key.get((m.name, alg.name), [])
+            alg = _apply_algorithm_fixes(alg, fs)
+            new_algs.append(alg)
         out.append(m.model_copy(update={"algorithms": new_algs}))
     return out
+
+
+def _apply_algorithm_fixes(
+    alg: AlgorithmSpec, findings: list[AuditFinding],
+) -> AlgorithmSpec:
+    updates: dict = {}
+    new_inputs = list(alg.inputs or [])
+    for f in findings:
+        if f.issue == "first_param_type_mismatch" and new_inputs:
+            new_inputs[0] = new_inputs[0].model_copy(
+                update={"rust_type": f.expected},
+            )
+        elif f.issue == "return_type_mismatch":
+            updates["return_type"] = f.expected
+    if new_inputs != list(alg.inputs or []):
+        updates["inputs"] = new_inputs
+    return alg.model_copy(update=updates) if updates else alg
 
 
 def format_report(report: AuditReport) -> str:
