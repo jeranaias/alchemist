@@ -371,7 +371,7 @@ class TDDGenerator:
             )
 
     def _verify_cached_win_twice(
-        self, crate_dir: Path, test_name_prefix: str,
+        self, crate_dir: Path, test_name_prefix: str | list[str],
     ) -> tuple[bool, int]:
         """Run the test filter twice. Returns (ok, total_tests_observed).
 
@@ -423,7 +423,7 @@ class TDDGenerator:
                 module_path.write_text(replaced, encoding="utf-8")
                 ok_compile, _ = _run_cargo_check(crate_dir, timeout=180)
                 if ok_compile:
-                    test_name_prefix = f"test_{alg.name}_"
+                    test_name_prefix = _test_filters_for_fn(alg.name)
                     # 2x verify at restore: a flaky cached impl poisons
                     # progress. Both runs must pass with >0 tests observed.
                     ok_twice, total_tests = self._verify_cached_win_twice(
@@ -458,7 +458,7 @@ class TDDGenerator:
             )
             return attempt
 
-        test_name_prefix = f"test_{alg.name}_"
+        test_name_prefix = _test_filters_for_fn(alg.name)
         fallback_test = f"smoke_{alg.name}"
         previous_failure = ""  # carries test output into next iteration prompt
 
@@ -870,7 +870,7 @@ class TDDGenerator:
         *,
         previous_failure: str,
         crate_dir: Path,
-        test_name_prefix: str,
+        test_name_prefix: str | list[str],
     ):
         """Fan out multi_sample_n candidates, evaluate, pick best.
 
@@ -1596,11 +1596,47 @@ def _run_cargo_test(path: Path, timeout: int = 600) -> tuple[bool, str, str]:
     return rc == 0, stdout, stderr
 
 
-def _run_cargo_test_filter(path: Path, test_filter: str, timeout: int = 300) -> tuple[bool, str, str]:
-    rc, stdout, stderr = _cargo_with_link_retry(
-        ["cargo", "test", test_filter, "--", "--nocapture"], path, timeout,
-    )
+def _run_cargo_test_filter(path: Path, test_filter: str | list[str], timeout: int = 300) -> tuple[bool, str, str]:
+    """Run `cargo test` filtered to specific name prefixes.
+
+    `test_filter` may be a single string or a list of strings. On Windows,
+    cargo only accepts one positional TESTNAME before `--`; multiple
+    positional args are rejected. The Rust test binary, however, treats
+    non-flag args as OR'd filters. So we pass all filters after `--`.
+
+    Using multiple filters lets us target several non-overlapping test-
+    name families simultaneously — important when the short name of fn A
+    is a prefix of fn B (e.g., `crc32` vs `crc32_combine_op`). Without
+    this, `test_crc32_` would sweep in `test_crc32_combine_op_*` and
+    falsely attribute sibling failures to the function under test.
+    """
+    if isinstance(test_filter, str):
+        filters = [test_filter]
+    else:
+        filters = [f for f in test_filter if f]
+    cmd = ["cargo", "test", "--", *filters, "--nocapture"]
+    rc, stdout, stderr = _cargo_with_link_retry(cmd, path, timeout)
     return rc == 0, stdout, stderr
+
+
+def _test_filters_for_fn(fn_name: str) -> list[str]:
+    """Return the set of cargo test substring filters that match THIS
+    function's tests and no sibling function's tests.
+
+    Test-name schemes in use:
+      test_<fn>_vec_<desc>     — catalog vectors
+      test_<fn>_spec_<idx>     — spec.test_vectors
+      test_<fn>_state_<idx>    — state-mutator vectors
+      test_<fn>_observer_<idx> — observer vectors
+      smoke_<fn>               — legacy smoke test (rare)
+    """
+    return [
+        f"test_{fn_name}_vec_",
+        f"test_{fn_name}_spec_",
+        f"test_{fn_name}_state_",
+        f"test_{fn_name}_observer_",
+        f"smoke_{fn_name}",
+    ]
 
 
 def _top_lines(text: str, n: int) -> str:

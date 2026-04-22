@@ -246,12 +246,22 @@ def _verify_restored(
 
 def make_cargo_evaluator(
     crate_dir: Path,
-    test_filter: str,
+    test_filter: "str | list[str]",
     *,
     check_timeout: int = 180,
     test_timeout: int = 300,
 ) -> Evaluator:
-    """Build an Evaluator that runs `cargo check` + `cargo test <filter>`."""
+    """Build an Evaluator that runs `cargo check` + `cargo test <filter>`.
+
+    `test_filter` may be a single prefix or a list of prefixes. cargo OR's
+    positional filter args, letting callers target only THIS function's
+    tests without sweeping in sibling functions whose names start with
+    the same prefix (e.g., `crc32` vs `crc32_combine_op`).
+    """
+    if isinstance(test_filter, str):
+        filters = [test_filter]
+    else:
+        filters = [f for f in test_filter if f]
     def evaluate() -> tuple[bool, int, int, str]:
         try:
             chk = subprocess.run(
@@ -265,8 +275,11 @@ def make_cargo_evaluator(
         if chk.returncode != 0:
             return False, 0, 0, "\n".join(chk.stderr.splitlines()[:10])
         try:
+            # Filters after `--` go to the Rust test binary, which accepts
+            # multiple OR'd filters. Cargo only accepts a single TESTNAME
+            # before `--` on Windows.
             tst = subprocess.run(
-                ["cargo", "test", test_filter, "--", "--nocapture"],
+                ["cargo", "test", "--", *filters, "--nocapture"],
                 cwd=str(crate_dir),
                 capture_output=True, text=True, timeout=test_timeout,
                 encoding="utf-8", errors="replace",
