@@ -494,11 +494,24 @@ def _split_top_level_commas(s: str) -> list[str]:
 def render_constants_block(consts: list[ConstantSpec]) -> str:
     """Render a list of constants as a Rust `pub const` block.
 
-    Ordering: preserve extraction order (which follows C source order),
-    so references between constants Just Work in the common case.
+    Conflict resolution: Rust forbids `pub const NAME` to appear twice
+    in the same scope. C allows `#define NAME` to appear in multiple
+    `#ifdef` branches — the preprocessor resolves to one. Without
+    running the preprocessor, we see all branches. Rule: LATER wins
+    (matches naive "last #define takes effect" intuition, which works
+    for Z_TESTN-style testing hooks that override a default).
+
+    Ordering: preserve extraction order (which follows C source order);
+    for duplicates, keep ONLY the last occurrence so the emitted Rust
+    always compiles.
     """
+    # Dedupe by name, keeping last
+    seen: dict[str, int] = {}
+    for i, c in enumerate(consts):
+        seen[c.name] = i
+    unique = [consts[i] for i in sorted(seen.values())]
     lines: list[str] = []
-    for c in consts:
+    for c in unique:
         if c.c_origin:
             lines.append(f"/// {c.c_origin}")
         lines.append(f"pub const {c.name}: {c.rust_type} = {c.rust_expr};")
