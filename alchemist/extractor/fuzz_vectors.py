@@ -525,6 +525,45 @@ def _crc32_combine_gen64_pure_ref(data: bytes) -> int:
     return _x2nmodp_pure_ref(n_k)
 
 
+def _adler32_combine_pure_ref(data: bytes) -> int:
+    """adler32_combine_(adler1, adler2, len2) — zlib's Adler-32 combiner.
+
+    Combines two Adler-32 checksums given the length of the second stream.
+    Port of adler32.c:adler32_combine_.
+
+    Input layout: adler1 (u32), adler2 (u32), len2 (u64). 16 bytes total.
+    """
+    padded = bytes(data[:16].ljust(16, b"\x00"))
+    adler1 = int.from_bytes(padded[0:4], "little")
+    adler2 = int.from_bytes(padded[4:8], "little")
+    len2 = int.from_bytes(padded[8:16], "little")
+    BASE = 65521
+    rem = len2 % BASE
+    sum1_a = adler1 & 0xFFFF
+    # sum2 starts as (rem * sum1_a) % BASE
+    sum2 = (rem * sum1_a) % BASE
+    # sum1 += (adler2 low) + BASE - 1
+    sum1 = (sum1_a + (adler2 & 0xFFFF) + BASE - 1) & 0xFFFFFFFF
+    # sum2 += (adler1 high) + (adler2 high) + BASE - rem
+    sum2 = (
+        sum2
+        + ((adler1 >> 16) & 0xFFFF)
+        + ((adler2 >> 16) & 0xFFFF)
+        + BASE
+        - rem
+    ) & 0xFFFFFFFF
+    if sum1 >= BASE:
+        sum1 -= BASE
+    if sum1 >= BASE:
+        sum1 -= BASE
+    base2 = BASE << 1
+    if sum2 >= base2:
+        sum2 -= base2
+    if sum2 >= BASE:
+        sum2 -= BASE
+    return (sum1 | (sum2 << 16)) & 0xFFFFFFFF
+
+
 def _crc32_combine_op_pure_ref(data: bytes) -> int:
     """crc32_combine_op(crc1, crc2, op) — zlib's CRC combiner.
 
@@ -550,6 +589,7 @@ ZLIB_PURE_REFERENCES: dict[str, callable] = {
     "x2nmodp": _x2nmodp_pure_ref,
     "crc32_combine_gen64": _crc32_combine_gen64_pure_ref,
     "crc32_combine_op": _crc32_combine_op_pure_ref,
+    "adler32_combine_": _adler32_combine_pure_ref,
 }
 
 

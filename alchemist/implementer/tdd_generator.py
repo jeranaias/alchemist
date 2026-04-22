@@ -918,22 +918,43 @@ class TDDGenerator:
     def _topo_sort_algorithms(self, algs: list[AlgorithmSpec]) -> list[AlgorithmSpec]:
         """Sort algorithms so dependencies come before dependents.
 
-        Heuristic: an algorithm A depends on B if A's description or
-        mathematical_description mentions B's name as a function call
-        (identifier followed by '('). Functions with no dependencies go
-        first, then their dependents, etc.
+        Heuristics (OR'd):
+          1. A's description mentions B's name as a function call.
+          2. A's hardport source (if present) calls B. Authoritative when
+             available — the hardport IS the correct impl, so any call it
+             makes is a real runtime dependency.
+
+        Functions with no dependencies go first, then their dependents.
+        Unresolved cycles fall through to original order.
         """
         names = {a.name for a in algs}
         alg_by_name = {a.name: a for a in algs}
 
+        # Pre-cache hardport bodies for fast lookup. Scanning the hardports
+        # root for every function is cheap (dozens of files).
+        from alchemist.references import registry as _reg
+        hardport_text: dict[str, str] = {}
+        hardports_root = _reg.REFERENCES_DIR
+        for subject_hint in ("zlib",):
+            base = hardports_root / f"{subject_hint}_hardports"
+            if not base.exists():
+                continue
+            for path in base.rglob("*.rs"):
+                try:
+                    hardport_text[path.stem] = path.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+
         def deps_of(a: AlgorithmSpec) -> set[str]:
             text = (a.description or "") + " " + (a.mathematical_description or "")
+            hp = hardport_text.get(a.name, "")
+            combined = text + "\n" + hp
             found: set[str] = set()
             for n in names:
                 if n == a.name:
                     continue
                 # Look for call-site patterns: `name(` or `name (`
-                if re.search(rf"\b{re.escape(n)}\s*\(", text):
+                if re.search(rf"\b{re.escape(n)}\s*\(", combined):
                     found.add(n)
             return found
 
