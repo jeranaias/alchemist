@@ -325,6 +325,37 @@ def run_implement_stage(
             console.print(
                 f"[cyan]spec auditor: auto-fixed {len(fixable)} finding(s)[/cyan]"
             )
+    # Constants auto-extractor: pull C #define / enum / static const into
+    # each module's spec.constants so the skeleton can inject them as
+    # `pub const` before the LLM sees the function stubs. Removes the
+    # whole class of "undefined identifier" compile failures from LLM
+    # referencing C constants it can't reproduce.
+    try:
+        from alchemist.extractor.constants_extractor import extract_from_path
+        c_sources: dict[str, Path] = {
+            p.stem: p for p in source.rglob("*.c")
+            if "test" not in p.name.lower() and "example" not in p.name.lower()
+        }
+        total_consts = 0
+        for module in specs:
+            if module.constants:
+                continue  # already populated (e.g., loaded from cache)
+            c_file = c_sources.get(module.name)
+            if c_file is None:
+                continue
+            try:
+                report = extract_from_path(c_file)
+                module.constants = report.extracted
+                total_consts += report.count
+            except Exception:  # noqa: BLE001
+                continue
+        if total_consts:
+            console.print(
+                f"[cyan]constants extractor: {total_consts} consts across "
+                f"{len([m for m in specs if m.constants])} modules[/cyan]"
+            )
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[yellow]constants extractor skipped: {e}[/yellow]")
     arch = CrateArchitecture.model_validate(
         json.loads(arch_path.read_text(encoding="utf-8"))
     )

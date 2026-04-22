@@ -140,6 +140,25 @@ class AlgorithmSpec(BaseModel):
     source_files: list[str] = Field(default_factory=list)
 
 
+class ConstantSpec(BaseModel):
+    """A constant extracted from C source (#define, enum, static const).
+
+    Phase 0 Bug — LLM cannot reliably reproduce long precomputed tables or
+    named constants from C source. Extracting them deterministically and
+    injecting into generated Rust removes a whole class of compile failures
+    (undefined identifier, wrong value, truncated table).
+    """
+    name: str = Field(description="Constant name as emitted in Rust (e.g., 'CRC32_POLY')")
+    rust_type: str = Field(description="Rust type annotation (e.g., 'u32', '[u32; 256]')")
+    rust_expr: str = Field(description="RHS Rust expression (literal, array, etc.)")
+    c_origin: str = Field(
+        default="",
+        description="Original C text (e.g., '#define NMAX 5552'). For audit.",
+    )
+    c_file: str = Field(default="", description="Source file path, for provenance")
+    c_line: int = Field(default=0, description="Source line number")
+
+
 class ModuleSpec(BaseModel):
     """Specification for a complete module (group of related algorithms)."""
     name: str
@@ -148,6 +167,10 @@ class ModuleSpec(BaseModel):
     algorithms: list[AlgorithmSpec]
     shared_types: list[SharedType] = Field(default_factory=list)
     module_invariants: list[str] = Field(default_factory=list)
+    constants: list[ConstantSpec] = Field(
+        default_factory=list,
+        description="Constants extracted from the module's C source.",
+    )
 
 
 class SharedType(BaseModel):

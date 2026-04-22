@@ -468,6 +468,14 @@ def _module_rs_for(
     for t in module.shared_types or []:
         lines.append(emit_shared_type(t))
         lines.append("")
+    # Constants: prefer the extractor-derived ones (attached to the spec).
+    # Fall back to the hard-coded _known_constants_for_module map for
+    # tables that aren't in the C source (e.g., computed at runtime).
+    spec_consts = list(getattr(module, "constants", None) or [])
+    if spec_consts:
+        from alchemist.extractor.constants_extractor import render_constants_block
+        lines.append(render_constants_block(spec_consts))
+        lines.append("")
     # Known constants that the LLM can't reliably regenerate (long precomputed
     # tables, named consts from the C source). Injecting these up front means
     # the impl just references them instead of hallucinating.
