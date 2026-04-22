@@ -70,9 +70,18 @@ def _snake(name: str) -> str:
             out.append("_")
         out.append(ch.lower())
     s = "".join(out)
-    # Replace non-alphanumerics
+    # Replace non-alphanumerics with single underscore
     s = re.sub(r"[^a-z0-9_]+", "_", s)
-    s = re.sub(r"_+", "_", s).strip("_")
+    s = re.sub(r"_+", "_", s)
+    # Preserve leading underscore(s) — they're semantically meaningful in
+    # zlib (internal fns like `_tr_stored_block` — the hardport and C
+    # source agree on the name, so stripping the prefix here would cause
+    # the skeleton to emit `tr_stored_block`, and the hardport splice
+    # would fail to find the fn by name. Only trim trailing underscores.
+    s = s.rstrip("_")
+    # Strip leading underscore(s) ONLY if the result would be empty after.
+    if not s.lstrip("_"):
+        s = s.lstrip("_")
     return s or "unnamed"
 
 
