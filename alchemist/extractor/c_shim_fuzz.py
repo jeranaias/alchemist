@@ -312,7 +312,10 @@ def fuzz_with_shim(
             if rt in ("&[u8]", "Vec<u8>"):
                 if not isinstance(v, (bytes, bytearray)):
                     v = bytes(v)
-                runner_args.append(ctypes.c_char_p(bytes(v)))
+                # Use a raw byte buffer — c_char_p stops at the first NUL,
+                # which silently truncates fuzzed buffers that contain 0x00.
+                buf_arr = (ctypes.c_ubyte * len(v))(*v)
+                runner_args.append(ctypes.cast(buf_arr, ctypes.POINTER(ctypes.c_ubyte)))
             elif rt == "bool":
                 runner_args.append(ctypes.c_int(1 if v else 0))
             elif rt in ("u8", "u16", "u32", "usize"):
