@@ -278,19 +278,53 @@ def fuzz_with_shim(
             v = _fuzzer_for_field(fs, rng)
             pre_values[fs.name] = v
             _set_field(dll, fs, v)
-        # Collect extra args
+        # Collect extra args. Packing rules:
+        #   &[u8] / Vec<u8>  → c_char_p (pointer ONLY; the binding must
+        #                      include a separate length scalar if the C
+        #                      shim needs it, matching the C API)
+        #   bool             → c_int (C bool is int under the hood)
+        #   u8/u16/u32/usize → c_uint
+        #   u64              → c_ulong
+        #   i8/i16/i32/isize → c_int
+        #   i64              → c_long
+        #
+        # Fuzzers may take either `(rng)` or `(rng, prior)` where `prior`
+        # is the dict of extra_values already computed. This lets a length
+        # arg derive from a preceding buffer arg: the binding for
+        # _tr_stored_block, for instance, makes `stored_len = len(buf)`.
         extra_values: dict[str, Any] = {}
         runner_args: list = []
+        import inspect as _inspect
         for ea in binding.extra_args:
-            v = ea.fuzzer(rng) if ea.fuzzer else 0
-            extra_values[ea.name] = v
-            # Infer ctypes type from rust_type
-            if ea.rust_type in ("u8", "u16", "u32", "usize"):
-                runner_args.append(ctypes.c_uint(v))
-            elif ea.rust_type in ("i8", "i16", "i32", "isize"):
-                runner_args.append(ctypes.c_int(v))
+            if ea.fuzzer is None:
+                v = 0
             else:
-                runner_args.append(ctypes.c_uint(v))
+                try:
+                    nparams = len(_inspect.signature(ea.fuzzer).parameters)
+                except (TypeError, ValueError):
+                    nparams = 1
+                if nparams >= 2:
+                    v = ea.fuzzer(rng, extra_values)
+                else:
+                    v = ea.fuzzer(rng)
+            extra_values[ea.name] = v
+            rt = ea.rust_type
+            if rt in ("&[u8]", "Vec<u8>"):
+                if not isinstance(v, (bytes, bytearray)):
+                    v = bytes(v)
+                runner_args.append(ctypes.c_char_p(bytes(v)))
+            elif rt == "bool":
+                runner_args.append(ctypes.c_int(1 if v else 0))
+            elif rt in ("u8", "u16", "u32", "usize"):
+                runner_args.append(ctypes.c_uint(int(v)))
+            elif rt == "u64":
+                runner_args.append(ctypes.c_ulong(int(v)))
+            elif rt in ("i8", "i16", "i32", "isize"):
+                runner_args.append(ctypes.c_int(int(v)))
+            elif rt == "i64":
+                runner_args.append(ctypes.c_long(int(v)))
+            else:
+                runner_args.append(ctypes.c_uint(int(v) if isinstance(v, (int, bool)) else 0))
         runner(*runner_args)
         post_values: dict[str, Any] = {}
         for fs in binding.fields:
@@ -549,6 +583,37 @@ ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
             CShimField("bi_valid", "i32", lambda rng: 0,
                        set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
             CShimField("pending", "Vec<u8>", lambda rng: b"", is_byte_buf=True),
+        ],
+    ),
+    # Stored-block writer: prepends the 3-bit header (type + BFINAL),
+    # aligns to a byte, writes LEN, NLEN, and copies `stored_len` bytes
+    # from `buf`. The Rust hardport takes `(buf: &[u8], stored_len: u32,
+    # last: bool)` and the C shim runner expects buf ptr + ulong len +
+    # int last. `stored_len` is derived from `buf` so the copy stays
+    # inside the fuzzed buffer (no OOB reads in C).
+    "_tr_stored_block": CShimMutatorBinding(
+        name="_tr_stored_block",
+        state_type="DeflateState",
+        runner="shim_run_tr_stored_block",
+        fields=[
+            CShimField("bi_buf", "u16", lambda rng: 0,
+                       set_argtype=ctypes.c_ushort, get_restype=ctypes.c_ushort),
+            CShimField("bi_valid", "i32", lambda rng: 0,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("pending", "Vec<u8>", lambda rng: b"", is_byte_buf=True),
+        ],
+        extra_args=[
+            StateFieldSpec(
+                "buf", "&[u8]",
+                lambda rng: bytes(rng.randint(0, 255) for _ in range(rng.randint(0, 32))),
+            ),
+            # stored_len derived from buf to avoid OOB. Uses the 2-arg
+            # fuzzer signature added in c_shim_fuzz.fuzz_with_shim.
+            StateFieldSpec(
+                "stored_len", "u32",
+                lambda rng, prior: len(prior.get("buf", b"")),
+            ),
+            StateFieldSpec("last", "bool", lambda rng: rng.random() < 0.5),
         ],
     ),
 }

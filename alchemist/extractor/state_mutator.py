@@ -92,6 +92,14 @@ def _render_scalar_literal(val: int, rust_type: str) -> str:
 def _render_value(value: Any, rust_type: str) -> str:
     """Render a Python value as a Rust literal of the given type."""
     t = rust_type.strip()
+    # Byte-slice references (`&[u8]`) — render as a slice literal so the
+    # test emitter can use the value directly as a slice argument.
+    if t == "&[u8]":
+        if isinstance(value, (bytes, bytearray)):
+            items = ", ".join(f"0x{b:02x}u8" for b in value)
+        else:
+            items = ", ".join(f"{int(b) & 0xff}u8" for b in (value or []))
+        return f"&[{items}]"
     if t.startswith("Vec<") and t.endswith(">"):
         inner = t[4:-1].strip()
         if inner == "u8":
