@@ -262,7 +262,15 @@ class SpecExtractor:
         }
 
         algorithms: list[AlgorithmSpec] = []
+        seen_names: set[str] = set()
         for fs in func_specs:
+            # Dedupe: the extractor can write two FunctionSpec with the same
+            # name when the LLM re-extracts a checkpoint that is then merged
+            # by the spec completer. Skip repeats so the skeleton doesn't
+            # emit `pub fn X` twice (Rust rejects duplicate fn definitions).
+            if fs.name in seen_names:
+                continue
+            seen_names.add(fs.name)
             cat = fs.category if fs.category in VALID_CATEGORIES else "other"
             algo = AlgorithmSpec(
                 name=fs.name,
