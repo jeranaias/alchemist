@@ -36,7 +36,7 @@ static void shim_zfree(voidpf opaque, voidpf addr) {
     (void)opaque; (void)addr;
 }
 
-EXPORT void shim_inflate_reset(void) {
+EXPORT void shim_reset(void) {
     memset(&g_state, 0, sizeof(g_state));
     memset(&g_strm, 0, sizeof(g_strm));
     memset(g_window, 0, sizeof(g_window));

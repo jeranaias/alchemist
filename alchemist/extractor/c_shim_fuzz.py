@@ -474,8 +474,6 @@ ZLIB_SHIM_OBSERVER_BINDINGS: dict[str, CShimObserverBinding] = {
                 ),
             ),
         ],
-        return_restype=ctypes.c_int,
-        return_rust_type="i32",
     ),
 }
 
@@ -630,11 +628,119 @@ ZLIB_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Inflate shim bindings — companion to deflate-side ZLIB_SHIM_BINDINGS.
+# These target a SEPARATE DLL (zlib_inflate_shim.dll) because inflate.h and
+# deflate.h both define `struct internal_state` and can't coexist in a single
+# CU without modifying the upstream source.
+# ---------------------------------------------------------------------------
+
+def _fuzz_inflate_mode(rng: random.Random) -> int:
+    # Inflate mode constants range HEAD=16180 .. SYNC=16214 approximately.
+    # Out-of-range values test the validation path; in-range exercise reset.
+    return rng.choice([16180, 16181, 16190, 16200, 16210, 16214, 0, 9999])
+
+def _fuzz_wbits(rng: random.Random) -> int:
+    # Valid range for zlib: 8..15 (zlib) or -15..-8 (raw) or 24..31 (auto-gzip)
+    return rng.choice([8, 9, 10, 15, -15, -8, 24, 31])
+
+def _fuzz_i32_small(rng: random.Random) -> int:
+    return rng.randint(-32, 32)
+
+def _fuzz_u32_small(rng: random.Random) -> int:
+    return rng.randint(0, 65535)
+
+
+ZLIB_INFLATE_SHIM_BINDINGS: dict[str, CShimMutatorBinding] = {
+    "inflateReset": CShimMutatorBinding(
+        name="inflateReset",
+        state_type="InflateState",
+        fields=[
+            CShimField("mode", "u32", _fuzz_inflate_mode,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("wrap", "i32", _fuzz_i32_small,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("hold", "u64", fuzz_u32,
+                       set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
+            CShimField("bits", "u32", _fuzz_u32_small,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("whave", "u32", _fuzz_u32_small,
+                       set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
+            CShimField("wnext", "u32", _fuzz_u32_small,
+                       set_argtype=ctypes.c_uint, get_restype=ctypes.c_uint),
+        ],
+    ),
+    "inflateResetKeep": CShimMutatorBinding(
+        name="inflateResetKeep",
+        state_type="InflateState",
+        fields=[
+            CShimField("mode", "u32", _fuzz_inflate_mode,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("wrap", "i32", _fuzz_i32_small,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("total", "u64", fuzz_u32,
+                       set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
+        ],
+    ),
+    "inflateStateCheck": CShimMutatorBinding(
+        name="inflateStateCheck",
+        state_type="InflateState",
+        fields=[
+            CShimField("mode", "u32", _fuzz_inflate_mode,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+        ],
+    ),
+    "inflatePrime": CShimMutatorBinding(
+        name="inflatePrime",
+        state_type="InflateState",
+        fields=[
+            CShimField("mode", "u32", _fuzz_inflate_mode,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("hold", "u64", fuzz_u32,
+                       set_argtype=ctypes.c_ulong, get_restype=ctypes.c_ulong),
+            CShimField("bits", "u32", _fuzz_u32_small,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+        ],
+        extra_args=[
+            StateFieldSpec("bits_arg", "i32", lambda rng: rng.randint(-1, 16)),
+            StateFieldSpec("value", "i32", _fuzz_i32_small),
+        ],
+    ),
+    "inflateReset2": CShimMutatorBinding(
+        name="inflateReset2",
+        state_type="InflateState",
+        fields=[
+            CShimField("mode", "u32", _fuzz_inflate_mode,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("wrap", "i32", _fuzz_i32_small,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+            CShimField("wbits", "u32", _fuzz_wbits,
+                       set_argtype=ctypes.c_int, get_restype=ctypes.c_int),
+        ],
+        extra_args=[
+            StateFieldSpec("windowBits", "i32", _fuzz_wbits),
+        ],
+    ),
+}
+
+
 def locate_zlib_shim() -> Path | None:
     """Find the zlib C shim DLL. Convention: subjects/zlib/shim/..."""
     candidates = [
         Path("subjects/zlib/shim/zlib_state_shim.dll"),
         Path("subjects/zlib/shim/libzlib_state_shim.so"),
+    ]
+    for c in candidates:
+        if c.exists():
+            return c.resolve()
+    return None
+
+
+def locate_zlib_inflate_shim() -> Path | None:
+    """Find the companion inflate-side shim DLL."""
+    candidates = [
+        Path("subjects/zlib/shim/zlib_inflate_shim.dll"),
+        Path("subjects/zlib/shim/libzlib_inflate_shim.so"),
     ]
     for c in candidates:
         if c.exists():

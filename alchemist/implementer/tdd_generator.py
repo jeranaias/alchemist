@@ -1417,8 +1417,8 @@ class TDDGenerator:
             )
             from alchemist.extractor.c_shim_fuzz import (
                 ZLIB_SHIM_BINDINGS, ZLIB_SHIM_PURE_BINDINGS,
-                ZLIB_SHIM_OBSERVER_BINDINGS,
-                locate_zlib_shim, _load_shim,
+                ZLIB_SHIM_OBSERVER_BINDINGS, ZLIB_INFLATE_SHIM_BINDINGS,
+                locate_zlib_shim, locate_zlib_inflate_shim, _load_shim,
                 fuzz_with_shim, fuzz_pure_shim, fuzz_observer_shim,
             )
             dll = load_zlib_dll(dll_path)
@@ -1426,6 +1426,12 @@ class TDDGenerator:
             # state-mutator vectors take priority over Python reference ports.
             shim_path = locate_zlib_shim()
             shim_dll = _load_shim(shim_path) if shim_path else None
+            # Companion inflate-side shim (separate DLL due to header
+            # include-guard conflicts between deflate.h and inflate.h).
+            inflate_shim_path = locate_zlib_inflate_shim()
+            inflate_shim_dll = (
+                _load_shim(inflate_shim_path) if inflate_shim_path else None
+            )
         except Exception as e:  # noqa: BLE001
             console.print(f"  [dim]fuzz backfill skipped: {e}[/dim]")
             return
@@ -1443,10 +1449,24 @@ class TDDGenerator:
                         alg.test_vectors = vectors
                         added += len(vectors)
                     continue
-                # C-shim state-mutator path
+                # C-shim state-mutator path (deflate DLL)
                 if shim_dll is not None and alg.name in ZLIB_SHIM_BINDINGS:
                     vectors = fuzz_with_shim(
                         shim_dll, alg, ZLIB_SHIM_BINDINGS[alg.name],
+                    )
+                    if vectors:
+                        alg.test_vectors = vectors
+                        added += len(vectors)
+                    continue
+                # C-shim state-mutator path (inflate DLL) — separate DLL
+                # because inflate.h / deflate.h can't share a CU.
+                if (
+                    inflate_shim_dll is not None
+                    and alg.name in ZLIB_INFLATE_SHIM_BINDINGS
+                ):
+                    vectors = fuzz_with_shim(
+                        inflate_shim_dll, alg,
+                        ZLIB_INFLATE_SHIM_BINDINGS[alg.name],
                     )
                     if vectors:
                         alg.test_vectors = vectors
