@@ -1,4 +1,4 @@
-pub fn adler32_combine_(adler1: u32, adler2: u32, len2: u64) -> u32 {
+pub fn adler32_combine_(adler1: u32, adler2: u32, len2: i64) -> u32 {
     // Port of zlib's adler32_combine_ (adler32.c).
     // RFC 1950 Adler-32. BASE = 65521 is the largest prime < 2^16.
     // The formula combines two Adler-32 checksums given the length of
@@ -13,7 +13,10 @@ pub fn adler32_combine_(adler1: u32, adler2: u32, len2: u64) -> u32 {
     // correctness requires exactly two subtractions for sum1 and up to
     // two (by BASE, by BASE*2) for sum2.
 
-    let rem = (len2 % (BASE as u64)) as u32;
+    // i64 → modulo by BASE. Negative lengths are undefined in the C API
+    // (z_off64_t is signed but zlib documents "length > 0"); we handle
+    // the unsigned interpretation via `.rem_euclid`.
+    let rem = (len2.rem_euclid(BASE as i64)) as u32;
     let sum1_a = adler1 & 0xffff;
 
     // `rem * sum1_a` bounded by (BASE-1) * 65535 < 2^32, no overflow.

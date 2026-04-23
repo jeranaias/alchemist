@@ -73,15 +73,18 @@ def _snake(name: str) -> str:
     # Replace non-alphanumerics with single underscore
     s = re.sub(r"[^a-z0-9_]+", "_", s)
     s = re.sub(r"_+", "_", s)
-    # Preserve leading underscore(s) — they're semantically meaningful in
-    # zlib (internal fns like `_tr_stored_block` — the hardport and C
-    # source agree on the name, so stripping the prefix here would cause
-    # the skeleton to emit `tr_stored_block`, and the hardport splice
-    # would fail to find the fn by name. Only trim trailing underscores.
-    s = s.rstrip("_")
-    # Strip leading underscore(s) ONLY if the result would be empty after.
-    if not s.lstrip("_"):
-        s = s.lstrip("_")
+    # Preserve both leading AND trailing underscores — they're
+    # semantically meaningful in zlib:
+    #   * `_tr_stored_block` — internal fn; the hardport / C source agree
+    #     on the name, so stripping the prefix would break hardport splice.
+    #   * `adler32_combine_` — the trailing `_` distinguishes from the
+    #     public `adler32_combine` (32-bit variant). Stripping it made the
+    #     test emitter call `super::adler32_combine(...)` while the
+    #     skeleton kept `pub fn adler32_combine_(...)` — resulting in
+    #     "function not found" at test-compile time for every splice
+    #     attempt.
+    # Only collapse consecutive underscores inside the name; preserve the
+    # runs at the edges.
     return s or "unnamed"
 
 
