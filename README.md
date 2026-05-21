@@ -9,8 +9,8 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](#requirements)
 [![rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](#requirements)
-[![tests](https://img.shields.io/badge/tests-201%2F201-success.svg)](#testing)
-[![status](https://img.shields.io/badge/status-active-brightgreen.svg)](#roadmap)
+[![tests](https://img.shields.io/badge/tests-543%2F543-success.svg)](#testing)
+[![status](https://img.shields.io/badge/status-research--prototype-yellow.svg)](PRODUCTION_READINESS.md)
 
 </div>
 
@@ -98,7 +98,7 @@ Every stage is checkpointed in `.alchemist/`. Re-running after a crash picks up 
 ## Install
 
 ```bash
-git clone https://github.com/jeranaias/alchemist
+git clone https://github.com/thornveil-ai/alchemist
 cd alchemist
 pip install -e .
 
@@ -115,7 +115,7 @@ alchemist doctor
 │ cargo              │ OK     │ ~/.cargo/bin/cargo                     │
 │ rustc              │ OK     │ ~/.cargo/bin/rustc                     │
 │ gcc                │ OK     │ /usr/bin/gcc                           │
-│ local LLM server   │ OK     │ http://100.109.172.64:8090/v1 → 200    │
+│ local LLM server   │ OK     │ http://your-llm-host:8090/v1 → 200    │
 │ standards catalog  │ OK     │ 12 algorithms loaded                   │
 │ scrubber           │ OK     │ 30 rules loaded                        │
 │ anti-stub detector │ OK     │ loaded                                 │
@@ -423,6 +423,6 @@ Apache-2.0. See [`LICENSE`](LICENSE).
 
 **Alchemist is an experiment in what C-to-Rust could be if we stopped pretending syntax was enough.**
 
-If you're translating a codebase, try it. If you hit a pattern that doesn't convert cleanly, [open an issue](https://github.com/jeranaias/alchemist/issues) — that's how the roadmap grows.
+If you're translating a codebase, try it. If you hit a pattern that doesn't convert cleanly, [open an issue](https://github.com/thornveil-ai/alchemist/issues) — that's how the roadmap grows.
 
 </div>

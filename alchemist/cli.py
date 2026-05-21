@@ -360,7 +360,7 @@ def doctor():
     try:
         import httpx
         from alchemist.config import AlchemistConfig
-        endpoint = AlchemistConfig().local_endpoint or "http://100.109.172.64:8090/v1"
+        endpoint = AlchemistConfig().local_endpoint or "http://localhost:8090/v1"
         r = httpx.get(endpoint.replace("/v1", "/health"), timeout=5)
         ok = r.status_code == 200
         row("local LLM server", ok, f"{endpoint} → HTTP {r.status_code}")

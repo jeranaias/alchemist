@@ -32,7 +32,7 @@ _INFLIGHT_SEM = threading.Semaphore(_MAX_INFLIGHT)
 
 
 # vLLM server details
-DEFAULT_ENDPOINT = "http://100.109.172.64:8090/v1"
+DEFAULT_ENDPOINT = os.environ.get("ALCHEMIST_ENDPOINT", "http://localhost:8090/v1")
 DEFAULT_MODEL = "local"
 
 

@@ -14,7 +14,7 @@ class AlchemistConfig(BaseModel):
     # Local LLM endpoint (RigRun vLLM server)
     local_endpoint: str = Field(
         default_factory=lambda: os.environ.get(
-            "ALCHEMIST_ENDPOINT", "http://100.109.172.64:8090/v1"
+            "ALCHEMIST_ENDPOINT", "http://localhost:8090/v1"
         )
     )
     model_name: str = "local"

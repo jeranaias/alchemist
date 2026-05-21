@@ -17,7 +17,7 @@ This report catalogs every bug found, defines what Alchemist needs to be a turnk
 - **Stage 4 produces compilable output**: After Phase 1 fixes (scrubber, holistic fixer, validator), 7/7 crates compile with 0 unsafe
 - **Adler-32**: After fixing wrong constants, **bit-exact match with C zlib across 30,000+ random byte arrays**
 - **The methodology is sound**: algorithm-first translation produces 9.2× LOC compression and clean idiomatic code
-- **Local-only inference works**: Qwen3.5-122B at 100.109.172.64:8090, zero cloud cost
+- **Local-only inference works**: Qwen3.5-122B at your-llm-host:8090, zero cloud cost
 
 ## What's broken (verification findings)
 
