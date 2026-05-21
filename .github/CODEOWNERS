@@ -1,0 +1,29 @@
+# Alchemist — algorithm-aware C-to-Rust translation
+# Apache-2.0, public.
+# Drop into thornveil-ai/alchemist/.github/CODEOWNERS at migration time.
+
+# Default owner
+* @thornveil-ai/engineering
+
+# Six pipeline stages — engineering owns
+/alchemist/analyzer/      @thornveil-ai/engineering
+/alchemist/extractor/     @thornveil-ai/engineering
+/alchemist/architect/     @thornveil-ai/engineering
+/alchemist/implementer/   @thornveil-ai/engineering
+/alchemist/verifier/      @thornveil-ai/engineering
+/alchemist/reporter/      @thornveil-ai/engineering
+
+# LLM integration — agents team review (this is where vLLM/Qwen wiring lives)
+/alchemist/llm/           @thornveil-ai/agents
+
+# Anti-stub + scrubber — security-relevant (anti-evasion)
+/alchemist/implementer/anti_stub.py  @thornveil-ai/security
+/alchemist/implementer/scrubber.py   @thornveil-ai/security
+
+# CLI + pipeline entry
+/alchemist/cli.py         @thornveil-ai/engineering
+/alchemist/pipeline*.py   @thornveil-ai/engineering
+
+# Build / release
+/pyproject.toml           @jeranaias
+/.github/workflows/       @jeranaias

@@ -1,0 +1,15 @@
+# Label sync — calls the org-wide reusable workflow at thornveil-ai/.github.
+
+name: Label sync
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    uses: thornveil-ai/.github/.github/workflows/label-sync.yml@main
+    permissions:
+      contents: read
+      issues: write
